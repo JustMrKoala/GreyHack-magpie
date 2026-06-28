@@ -510,6 +510,13 @@ StateManager.crack_best_wifi = function()
     //   crypto.aireplay(bssid, essid, acks) -> capture packets to file.cap
     //   crypto.aircrack("/home/user/file.cap") -> returns password string
     //   computer.connect_wifi("wlan0", bssid, essid, pass) -> 1 on success
+
+    // Skip if already connected
+    if get_shell.host_computer.active_net_card != null then
+        print(UI.ok("WiFi already connected — skipping crack."))
+        return true
+    end if
+
     crypto = include_lib("/lib/crypto.so")
     if crypto == null then
         print(UI.err("crypto.so not found in /lib — cannot crack WiFi."))
@@ -626,6 +633,82 @@ StateManager.first_layer = function()
     if self.cob["home_metax"]  == null then exit(UI.err("metaxploit.so failed to load."))
     if self.cob["home_crypto"] == null then exit(UI.err("crypto.so failed to load."))
     print(UI.ok("Libraries ready."))
+
+    // Step 3.5: autodiscover hackstore repos and install missing dependencies
+    apt = self.cob["aptclient"]
+    if apt == null then
+        print(UI.warn("aptclient.so not loaded — skipping hackstore discovery."))
+    else
+        REQUIRED_DEPS = ["metaxploit", "crypto", "rshell"]
+
+        print(UI.info("Discovering hackstore repositories..."))
+        repo_raw = apt.show
+        known_repos = {}
+        if repo_raw == null or typeof(repo_raw) != "string" then
+            print(UI.warn("No repos configured yet — sources.txt may be empty."))
+        else if repo_raw.indexOf("Error") != null then
+            print(UI.warn("Could not list repos: " + repo_raw))
+        else
+            for repo in repo_raw.split(char(10))
+                repo = repo.trim
+                if repo != "" then known_repos[repo] = true
+            end for
+            print(UI.ok("Found " + known_repos.indexes.len + " repo(s)."))
+        end if
+
+        // Scan LAN for any unregistered hackstore nodes on port 27
+        print(UI.info("Scanning LAN for hackstore nodes (port 27)..."))
+        router = get_router(get_shell.host_computer.public_ip)
+        if router != null then
+            for lan_ip in router.devices_lan_ip
+                for port in router.device_ports(lan_ip)
+                    if port.port_number == 27 and not port.is_closed then
+                        repo_addr = lan_ip + ":27"
+                        if not known_repos.hasIndex(repo_addr) then
+                            print(UI.info("Found new hackstore at " + repo_addr + " — adding..."))
+                            add_result = apt.add_repo(lan_ip)
+                            if typeof(add_result) == "string" then
+                                print(UI.warn("Could not add " + repo_addr + ": " + add_result))
+                            else
+                                known_repos[repo_addr] = true
+                                print(UI.ok("Added repo: " + repo_addr))
+                            end if
+                        end if
+                    end if
+                end for
+            end for
+        else
+            print(UI.warn("No router accessible — LAN scan skipped."))
+        end if
+
+        // Check each required dep; install if missing
+        print(UI.info("Checking dependencies..."))
+        for dep in REQUIRED_DEPS
+            installed = apt.search(dep)
+            already_ok = false
+            if typeof(installed) != "string" and installed != null then
+                for pkg in installed
+                    if pkg.is_match(dep) then
+                        already_ok = true
+                        break
+                    end if
+                end for
+            end if
+
+            if already_ok then
+                print(UI.ok(dep + " already installed."))
+            else
+                print(UI.info("Installing " + dep + "..."))
+                result = apt.install(dep)
+                if typeof(result) == "string" then
+                    print(UI.warn("Failed to install " + dep + ": " + result))
+                else
+                    print(UI.ok(dep + " installed."))
+                end if
+            end if
+        end for
+        print(UI.ok("Dependency check complete."))
+    end if
 
     // Step 4: plugins
     s = get_shell
@@ -1001,20 +1084,16 @@ ExploitManager.map_target = function(ip)
         resolved_ip = nslookup(ip)
     end if
 
-    out = UI.header("MAP  " + ip) + char(10) + char(10)
+    out = UI.header("MAP  " + ip) + char(10)
 
-    out = out + UI.section("WHOIS") + char(10)
-    if domain_label != "" then
-        out = out + UI.row("  Domain",  domain_label, C_GRAY, C_WHITE)  + char(10)
-    end if
-    out = out + UI.row("  IP",      resolved_ip,  C_GRAY, C_BLUE)   + char(10)
+    // ── WHOIS + Router in one block ──────────────────────────────────────────
+    if domain_label != "" then out = out + UI.row(" Domain", domain_label, C_GRAY, C_WHITE) + char(10)
+    out = out + UI.row(" IP", resolved_ip, C_GRAY, C_BLUE) + char(10)
     raw_whois = whois(resolved_ip)
     for line in raw_whois.split(char(10))
         line = line.trim
-        if line == "" then continue
-        out = out + "  " + UI.c(line, C_WHITE) + char(10)
+        if line != "" then out = out + "  " + UI.c(line, C_GRAY) + char(10)
     end for
-    out = out + char(10)
 
     router = get_router(resolved_ip)
     if router == null then
@@ -1022,52 +1101,37 @@ ExploitManager.map_target = function(ip)
         return out
     end if
 
-    out = out + UI.section("Router") + char(10)
-    out = out + UI.row("  LAN IP", router.local_ip,   C_GRAY, C_BLUE)   + char(10)
-    out = out + UI.row("  BSSID",  router.bssid_name, C_GRAY, C_WHITE)  + char(10)
-    out = out + UI.row("  ESSID",  router.essid_name, C_GRAY, C_YELLOW) + char(10)
-    out = out + char(10)
+    out = out + UI.row(" Router", router.essid_name + "  " + UI.c(router.bssid_name, C_DARK) + "  lan:" + router.local_ip, C_GRAY, C_YELLOW) + char(10)
 
-    out = out + UI.section("Open Ports") + char(10)
-    open_count = 0
+    // Firewall (only if rules exist)
+    if router.firewall_rules.len > 0 then
+        fw_str = ""
+        for rule in router.firewall_rules
+            fw_str = fw_str + rule + "  "
+        end for
+        out = out + UI.row(" FW", fw_str.trim, C_GRAY, C_ORANGE) + char(10)
+    end if
+
+    // ── Ports: all on one line each, open first ───────────────────────────────
+    out = out + char(10) + UI.section("Ports") + char(10)
     for port in router.used_ports
         if port.is_closed then continue
-        open_count = open_count + 1
-        service = router.port_info(port)
-        out = out + "  " + UI.c(port.port_number, C_YELLOW) + "  " + UI.c("OPEN", C_GREEN) + "  " + UI.c(service, C_WHITE) + "  " + UI.c("-> " + port.get_lan_ip, C_BLUE) + char(10)
+        out = out + "  " + UI.c("OPEN  ", C_GREEN) + UI.c(port.port_number, C_YELLOW) + "  " + UI.c(router.port_info(port), C_WHITE) + "  " + UI.c("-> " + port.get_lan_ip, C_BLUE) + char(10)
     end for
-    if open_count == 0 then out = out + "  " + UI.c("No open ports detected.", C_GRAY) + char(10)
-    out = out + char(10)
-
-    out = out + UI.section("Closed Ports") + char(10)
-    closed_count = 0
     for port in router.used_ports
         if not port.is_closed then continue
-        closed_count = closed_count + 1
-        service = router.port_info(port)
-        out = out + "  " + UI.c(port.port_number, C_GRAY) + "  " + UI.c("CLOSED", C_RED) + "  " + UI.c(service, C_DARK) + char(10)
+        out = out + "  " + UI.c("CLOSED", C_RED) + " " + UI.c(port.port_number, C_DARK) + "  " + UI.c(router.port_info(port), C_DARK) + char(10)
     end for
-    if closed_count == 0 then out = out + "  " + UI.c("No closed ports.", C_GRAY) + char(10)
-    out = out + char(10)
 
-    out = out + UI.section("Firewall") + char(10)
-    if router.firewall_rules.len == 0 then
-        out = out + "  " + UI.c("No firewall rules.", C_GRAY) + char(10)
-    else
-        for rule in router.firewall_rules
-            out = out + "  " + UI.c(rule, C_ORANGE) + char(10)
-        end for
-    end if
-    out = out + char(10)
-
-    out = out + UI.section("LAN Devices") + char(10)
+    // ── LAN Devices ──────────────────────────────────────────────────────────
+    out = out + char(10) + UI.section("LAN Devices") + char(10)
     for lan in router.devices_lan_ip
-        out = out + char(10) + "  " + UI.c(lan, C_BLUE) + char(10)
+        out = out + "  " + UI.c(lan, C_BLUE)
         for port in router.device_ports(lan)
-            state = port.is_closed and UI.c("CLOSED", C_RED) or UI.c("OPEN  ", C_GREEN)
-            service = router.port_info(port)
-            out = out + "    " + state + "  " + UI.c(port.port_number, C_YELLOW) + "  " + UI.c(service, C_WHITE) + char(10)
+            state = port.is_closed and UI.c(" [X]", C_RED) or UI.c(" [O]", C_GREEN)
+            out = out + state + UI.c(port.port_number, C_YELLOW) + UI.c(":" + router.port_info(port), C_DARK)
         end for
+        out = out + char(10)
     end for
 
     return out
