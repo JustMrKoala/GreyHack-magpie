@@ -511,10 +511,16 @@ StateManager.crack_best_wifi = function()
     //   crypto.aircrack("/home/user/file.cap") -> returns password string
     //   computer.connect_wifi("wlan0", bssid, essid, pass) -> 1 on success
 
-    // Skip if already connected
-    if get_shell.host_computer.active_net_card != null then
-        print(UI.ok("WiFi already connected — skipping crack."))
-        return true
+    // Skip if already connected (more reliable check)
+    computer = get_shell.host_computer
+    if computer.active_net_card != null then
+        // Double-check: sometimes active_net_card is set but connection is dead
+        nets = computer.wifi_networks("wlan0")
+        if nets != null and nets.len > 0 then
+            print(UI.ok("WiFi appears connected (active_net_card + networks visible) — skipping crack."))
+            print(UI.info("If you're actually not connected, run 'wifi' command later to force reconnect."))
+            return true
+        end if
     end if
 
     crypto = include_lib("/lib/crypto.so")
@@ -641,6 +647,24 @@ StateManager.first_layer = function()
     else
         REQUIRED_DEPS = ["metaxploit", "crypto", "rshell"]
 
+        print(UI.header("HACKSTORE SETUP"))
+        print(UI.info("MAGPIE works best when it has at least one hackstore repo."))
+        print(UI.warn("Random public IP scanning (brute force) is OPTIONAL and will ask you."))
+        print(UI.info("Enter your personal/known hackstore IP below (strongly recommended)."))
+
+        own_hackstore = user_input(UI.c("Hackstore IP (blank = skip): ", C_YELLOW)).trim
+        if own_hackstore != "" then
+            print(UI.info("Adding your hackstore: " + own_hackstore))
+            add_result = apt.add_repo(own_hackstore)
+            if typeof(add_result) == "string" then
+                print(UI.warn("Could not add: " + add_result + " (trying port 27)"))
+                add_result = apt.add_repo(own_hackstore, 27)
+            end if
+            if typeof(add_result) != "string" then
+                print(UI.ok("Your hackstore added successfully!"))
+            end if
+        end if
+
         print(UI.info("Discovering hackstore repositories..."))
         repo_raw = apt.show
         known_repos = {}
@@ -699,7 +723,7 @@ StateManager.first_layer = function()
                 print(UI.ok(dep + " already installed."))
             else
                 print(UI.info("Installing " + dep + "..."))
-                result = apt.install(dep)
+                result = apt.get(dep)
                 if typeof(result) == "string" then
                     print(UI.warn("Failed to install " + dep + ": " + result))
                 else
