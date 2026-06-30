@@ -441,8 +441,8 @@ StateManager.init = function()
 end function
 
 StateManager.first_layer = function()
-    self.cob["aptclient"] = include_lib(current_path + "/aptclient.so")
-    if self.cob["aptclient"] == null then exit("aptclient.so needs to be in the same directory as the script!")
+    self.cob["aptclient"] = include_lib("/libs/aptclient.so")
+    if self.cob["aptclient"] == null then exit("aptclient.so not found in /libs directory!")
 
     while true
         self.cob["aptclient"].update()
@@ -462,22 +462,22 @@ StateManager.first_layer = function()
         self.cob["aptclient"].add_repo(hack_shop)
     end while
 
-    if self.cob["aptclient"].check_upgrade(current_path + "/librshell.so") then
-        self.cob["aptclient"].install("librshell.so", current_path)
+    if self.cob["aptclient"].check_upgrade("/libs/librshell.so") then
+        self.cob["aptclient"].install("librshell.so", "/libs")
     end if
 
-    if self.cob["aptclient"].check_upgrade(current_path + "/metaxploit.so") then
-        self.cob["aptclient"].install("metaxploit.so", current_path)
+    if self.cob["aptclient"].check_upgrade("/libs/metaxploit.so") then
+        self.cob["aptclient"].install("metaxploit.so", "/libs")
     end if
 
-    if self.cob["aptclient"].check_upgrade(current_path + "/crypto.so") then
-        self.cob["aptclient"].install("crypto.so", current_path)
+    if self.cob["aptclient"].check_upgrade("/libs/crypto.so") then
+        self.cob["aptclient"].install("crypto.so", "/libs")
     end if
 
-    self.cob["home_metax"] = include_lib(current_path + "/metaxploit.so")
-    self.cob["remote_metax"] = include_lib(current_path + "/metaxploit.so")
+    self.cob["home_metax"] = include_lib("/libs/metaxploit.so")
+    self.cob["remote_metax"] = include_lib("/libs/metaxploit.so")
 
-    self.cob["home_crypto"] = include_lib(current_path + "/crypto.so")
+    self.cob["home_crypto"] = include_lib("/libs/crypto.so")
 
     self.cob["exploit_store"] = {}  // Structure: {"libname": {"version": {"address": {"string": ["root/user/guest", "shell/computer/file"], "string": ["root/user/guest", "shell/computer/file"]}}}}
 
@@ -997,61 +997,3 @@ ExploitManager.check_libpath = function(libname, libversion)
     if typeof(c) == "Error" then return c
 
     home_path = StateManager.cob["home_path"]
-
-    exploits_path = home_path + "/exploits"
-    lib_path = exploits_path + "/" + libname
-    version_path = lib_path + "/" + libversion
-
-    // Function to create a directory if it doesn't exist
-    check_dir = function(path, name)
-        if not c.File(path + "/" + name) then
-            c.create_folder(path, name)
-            return false
-        end if
-        return true
-    end function
-
-    // Ensure the necessary directories exist
-    check_dir(home_path, "exploits")
-    check_dir(exploits_path, libname)
-    check_dir(lib_path, libversion)
-
-    // Return whether the version directory has files
-    return c.File(version_path).get_files.len != 0
-end function
-
-ExploitManager.check_exploit = function(libname, libversion, address = null)
-    if not StateManager.cob["exploit_store"].hasIndex(libname) then return false
-    if not StateManager.cob["exploit_store"][libname].hasIndex(libversion) then return false
-    if address != null and not StateManager.cob["exploit_store"][libname][libversion].hasIndex(address) then return false
-
-    return true
-end function
-
-ExploitManager.load_exploit = function(libname, libversion)
-    c = StateManager.get_home_computer()
-    if typeof(c) == "Error" then return c
-
-    self.check_libpath(libname, libversion)
-    version_path = StateManager.cob["home_path"] + "/exploits/" + libname + "/" + libversion
-
-    version_dir = c.File(version_path)
-    if version_dir == null or version_dir.is_folder == false then
-        // No directory or not a folder
-        return
-    end if
-
-    exploits = {}
-    for file in version_dir.get_files
-        if file.is_folder then continue
-        exploits[file.name] = file
-    end for
-
-    return exploits
-end function
-
-////////////////////////////////////////////////////
-// Main Script Initialization
-////////////////////////////////////////////////////
-
-StateManager.init()
