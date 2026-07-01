@@ -182,14 +182,108 @@ MiniClick.commands = {}
 // Alias map: alias_name -> target_command_name
 MiniClick.aliases = {}
 
-MiniClick.category_order = ["recon", "exploit", "state", "files", "utility"]
+MiniClick.category_order = ["recon", "exploit", "state", "files", "shell", "utility"]
 MiniClick.category_labels = {
     "recon": "Recon",
     "exploit": "Exploit",
     "state": "State",
     "files": "Files",
+    "shell": "Shell",
     "utility": "Utility",
 }
+MiniClick.category_colors = {
+    "recon": "cyan",
+    "exploit": "orange",
+    "state": "magenta",
+    "files": "blue",
+    "shell": "gold",
+    "utility": "grey",
+}
+MiniClick.category_descriptions = {
+    "recon": "Discover targets, ports, and network layout before attacking.",
+    "exploit": "Connect to services, scan libraries, and gain shell/computer/file access.",
+    "state": "Track and switch between captured shells, computers, and files.",
+    "files": "Browse and transfer files on the focused system.",
+    "shell": "Shell, process, user, and service operations on the focused host.",
+    "utility": "General CLI helpers.",
+}
+MiniClick.command_examples = {
+    "map": ["map 192.168.1.1", "map target.com"],
+    "connect": ["connect 192.168.1.5 22", "connect 10.0.0.3 8080"],
+    "loadlib": ["loadlib /lib/init.so"],
+    "scan": ["scan", "scan --all", "scan --pick 1 --opt 192.168.1.1"],
+    "probe": ["probe 0x401000", "probe 0x401000 --all"],
+    "overflow": ["overflow 0x401000 strcpy", "overflow 0x401000 login --opt password123"],
+    "auto": ["auto", "auto --all"],
+    "focus": ["focus a1b2c3"],
+    "list": ["list"],
+    "exploits": ["exploits"],
+    "hack": ["hack 8.8.8.8 22", "hack 203.0.113.5 8080"],
+    "target": ["target 8.8.8.8 22", "target 192.168.1.5 8080 -o 192.168.1.10 --shotgun"],
+    "local": ["local /lib/init.so", "local /lib/init.so --shotgun"],
+    "shotgun": ["shotgun", "shotgun -o 192.168.1.10"],
+    "cd": ["cd /home", "cd .."],
+    "chmod": ["chmod 755 secret.txt", "chmod 644 file.txt -r"],
+    "login": ["login ssh 8.8.8.8 22 root password123"],
+    "pivot": ["pivot"],
+    "ping": ["ping 192.168.1.1"],
+    "hackshop": ["hackshop", "hackshop --add", "hackshop 203.0.113.1 --add"],
+}
+MiniClick.PATH_DIRS = ["/bin", "/usr/bin"]
+
+MiniClick.sort_strings = function(arr)
+    sorted = arr[:]
+    n = sorted.len
+    i = 0
+    while i < n - 1
+        j = 0
+        while j < n - i - 1
+            if sorted[j] > sorted[j + 1] then
+                tmp = sorted[j]
+                sorted[j] = sorted[j + 1]
+                sorted[j + 1] = tmp
+            end if
+            j = j + 1
+        end while
+        i = i + 1
+    end while
+    return sorted
+end function
+
+MiniClick.find_in_path = function(computer, command_name)
+    if command_name[:1] == "/" then
+        if computer.File(command_name) != null then return command_name
+        return null
+    end if
+
+    for dir in MiniClick.PATH_DIRS
+        program = dir + "/" + command_name
+        if computer.File(program) != null then return program
+        if command_name.indexOf(".") == null then
+            exe_path = program + ".exe"
+            if computer.File(exe_path) != null then return exe_path
+        end if
+    end for
+
+    return null
+end function
+
+MiniClick.list_system_binaries = function(computer)
+    seen = {}
+    result = []
+    for dir in MiniClick.PATH_DIRS
+        folder = computer.File(dir)
+        if folder == null or not folder.is_folder then continue
+        for f in folder.get_files
+            if f.is_folder then continue
+            name = f.name
+            if seen.hasIndex(name) then continue
+            seen[name] = true
+            result.push(name)
+        end for
+    end for
+    return result
+end function
 
 // CommandBuilder "Class"
 CommandBuilder = function(name, description)
@@ -348,39 +442,61 @@ MiniClick.format_help_rule = function(width)
     return rule.color("dim")
 end function
 
-MiniClick.format_help_heading = function(title)
-    return char(10) + title.cbold("cyan") + char(10) + MiniClick.format_help_rule(title.len) + char(10)
+MiniClick.format_help_heading = function(title, color = "cyan")
+    return char(10) + title.cbold(color) + char(10) + MiniClick.format_help_rule(title.len) + char(10)
 end function
 
-// Generating Help Text
+MiniClick.format_help_banner = function()
+    rule = MiniClick.format_help_rule(52)
+    out = char(10) + rule + char(10)
+    out = out + "  " + "Magpie".cbold("gold") + ("  greyscript multitool").color("dim") + char(10)
+    out = out + rule + char(10)
+    return out
+end function
+
+MiniClick.format_category_heading = function(cat)
+    label = MiniClick.category_labels.hasIndex(cat) and MiniClick.category_labels[cat] or cat
+    color = MiniClick.category_colors.hasIndex(cat) and MiniClick.category_colors[cat] or "cyan"
+    out = char(10) + label.cbold(color) + char(10) + MiniClick.format_help_rule(label.len) + char(10)
+    if MiniClick.category_descriptions.hasIndex(cat) then
+        out = out + "  " + MiniClick.category_descriptions[cat].color("dim") + char(10)
+    end if
+    return out
+end function
+
+MiniClick.pad_command_name = function(name, width)
+    padded = name
+    while padded.len < width
+        padded = padded + " "
+    end while
+    return padded
+end function
+
+MiniClick.format_exploit_guide = function()
+    out = MiniClick.format_help_heading("How to Exploit", "orange")
+    out = out + "  " + "1.".cbold("gold") + " " + "map".cbold("cyan") + " <ip|domain>".color("dim")
+    out = out + ("       Recon - map the network and find ").color("grey") + "open".cbold("green") + (" ports").color("grey") + char(10)
+    out = out + "  " + "2.".cbold("gold") + " " + "connect".cbold("orange") + " <ip> <port>".color("dim")
+    out = out + ("  Load the service library into an active session").color("grey") + char(10)
+    out = out + "  " + "3.".cbold("gold") + " " + "scan".cbold("green") + ("              Browse buffer overflows; type a ").color("grey") + "#".cbold("gold") + (" to run one").color("grey") + char(10)
+    out = out + "  " + "4.".cbold("gold") + " " + "focus".cbold("magenta") + " <uid>".color("dim")
+    out = out + ("         Switch to the captured shell/computer/file").color("grey") + char(10)
+    out = out + char(10) + ("  One-shot").color("dim") + char(10)
+    out = out + "    " + "hack".cbold("gold") + " <public_ip> <port> [bounce_lan]".color("dim") + ("  map + connect + auto (auto-bounces LAN IPs)").color("grey") + char(10)
+    out = out + char(10) + ("  Shortcuts").color("dim") + char(10)
+    out = out + "    " + "target".cbold("white") + (" <ip> <port>     connect + auto when you already know the port").color("grey") + char(10)
+    out = out + "    " + "local".cbold("white") + (" <path>          loadlib + auto for a local .so file").color("grey") + char(10)
+    out = out + "    " + "shotgun".cbold("white") + ("             brute-force every payload on the active library").color("grey") + char(10)
+    out = out + "    " + "auto".cbold("white") + ("           try cached + simple payloads automatically").color("grey") + char(10)
+    out = out + "    " + "auto --all".cbold("white") + ("      also test payloads that need extra arguments").color("grey") + char(10)
+    out = out + "    " + "overflow".cbold("white") + (" <addr> <payload>  run one exploit by hand").color("grey") + char(10)
+    out = out + "    " + "exploits".cbold("white") + ("         list saved exploits for the active library").color("grey") + char(10)
+    out = out + char(10) + ("  After capture: ").color("dim") + "list".color("cyan") + (" shows UIDs; ").color("dim") + "put/get".color("blue") + (" transfer files; ").color("dim") + "map".color("cyan") + (" again to pivot.").color("dim")
+    return out
+end function
+
 MiniClick.generate_help = function(command_name = null)
-    if command_name == null then
-        help_text = char(10) + "Magpie".cbold("gold") + " command reference" + char(10)
-
-        for cat in MiniClick.category_order
-            label = MiniClick.category_labels[cat]
-            section = ""
-            for name in MiniClick.commands.indexes
-                command = MiniClick.commands[name]
-                cmd_cat = command.hasIndex("category") and command.category or "utility"
-                if cmd_cat != cat then continue
-                line = "  " + name.cbold("white") + (" - ").color("dim") + command.description.color("grey") + char(10)
-                section = section + line
-            end for
-            if section.len > 0 then
-                help_text = help_text + MiniClick.format_help_heading(label) + section
-            end if
-        end for
-
-        if MiniClick.aliases.indexes.len > 0 then
-            help_text = help_text + MiniClick.format_help_heading("Aliases")
-            for alias in MiniClick.aliases.indexes
-                help_text = help_text + "  " + alias.color("orange") + (" -> ").color("dim") + MiniClick.aliases[alias].cbold("white") + char(10)
-            end for
-        end if
-
-        help_text = help_text + char(10) + ("Tip: ").color("dim") + "command --help".cbold("cyan") + (" for details.").color("dim")
-    else
+    if command_name != null and command_name != "" then
         if MiniClick.aliases.hasIndex(command_name) then
             command_name = MiniClick.aliases[command_name]
         end if
@@ -391,8 +507,43 @@ MiniClick.generate_help = function(command_name = null)
         cmd_cat = command.hasIndex("category") and command.category or "utility"
         cat_label = MiniClick.category_labels.hasIndex(cmd_cat) and MiniClick.category_labels[cmd_cat] or cmd_cat
 
-        help_text = char(10) + command_name.cbold("gold") + (" [" + cat_label + "]").color("dim") + char(10)
+        cat_color = MiniClick.category_colors.hasIndex(cmd_cat) and MiniClick.category_colors[cmd_cat] or "cyan"
+        help_text = char(10) + command_name.cbold("gold") + ("  ").color("dim") + ("[" + cat_label + "]").cbold(cat_color) + char(10)
+        help_text = help_text + MiniClick.format_help_rule(command_name.len + cat_label.len + 4) + char(10)
         help_text = help_text + command.description.color("white") + char(10)
+
+        if MiniClick.command_examples.hasIndex(command_name) then
+            help_text = help_text + MiniClick.format_help_heading("Examples", "gold")
+            for ex in MiniClick.command_examples[command_name]
+                help_text = help_text + "  " + ex.cbold("green") + char(10)
+            end for
+        end if
+
+        if cmd_cat == "exploit" or command_name == "map" then
+            help_text = help_text + MiniClick.format_help_heading("Exploit context", "orange")
+            if command_name == "map" then
+                help_text = help_text + "  " + ("Look for ").color("dim") + "[open]".cbold("green") + (" ports in the device list.").color("dim") + char(10)
+                help_text = help_text + "  " + ("Use ").color("dim") + "connect <public_or_lan_ip> <port>".cbold("orange") + (" - public IP works through port forwards.").color("dim") + char(10)
+            else if command_name == "connect" or command_name == "loadlib" then
+                help_text = help_text + "  " + ("Run after ").color("dim") + "map".color("cyan") + (" finds an open port, or ").color("dim") + "loadlib".color("cyan") + (" for local .so files.").color("dim") + char(10)
+                help_text = help_text + "  " + ("Then run ").color("dim") + "scan".cbold("green") + (" to pick an overflow.").color("dim") + char(10)
+            else if command_name == "scan" or command_name == "probe" or command_name == "auto" then
+                help_text = help_text + "  " + ("Requires an active library from ").color("dim") + "connect".color("orange") + (" or ").color("dim") + "loadlib".color("orange") + (".").color("dim") + char(10)
+                help_text = help_text + "  " + ("Successful exploits auto-focus; use ").color("dim") + "list".color("cyan") + (" and ").color("dim") + "focus <uid>".color("cyan") + (" to switch.").color("dim") + char(10)
+            else if command_name == "overflow" then
+                help_text = help_text + "  " + ("Manual overflow when you already know address + payload from ").color("dim") + "scan".color("green") + (".").color("dim") + char(10)
+                help_text = help_text + "  " + ("Use ").color("dim") + "--opt".color("green") + (" when the payload needs a LAN IP, password, or path.").color("dim") + char(10)
+            else if command_name == "exploits" then
+                help_text = help_text + "  " + ("Shows cached results for the current library; run ").color("dim") + "scan".cbold("green") + (" to execute one.").color("dim") + char(10)
+            else if command_name == "hack" then
+                help_text = help_text + "  " + ("Runs ").color("dim") + "map".color("cyan") + (" -> ").color("dim") + "connect".color("orange") + (" -> ").color("dim") + "auto".color("white") + (" with no prompts.").color("dim") + char(10)
+                help_text = help_text + "  " + ("Auto-tries LAN bounce IPs from the map when simple auto fails.").color("dim") + char(10)
+                help_text = help_text + "  " + ("Optional bounce_lan forces a specific LAN IP for ").color("dim") + "*".color("orange") + (" payloads.").color("dim") + char(10)
+            else if command_name == "target" or command_name == "local" or command_name == "shotgun" then
+                help_text = help_text + "  " + ("Legacy-style shortcuts wired into the new scan/auto workflow.").color("dim") + char(10)
+                help_text = help_text + "  " + ("Add ").color("dim") + "--shotgun".color("orange") + (" to brute-force all payloads when auto fails.").color("dim") + char(10)
+            end if
+        end if
 
         if command.arguments.len > 0 then
             help_text = help_text + MiniClick.format_help_heading("Arguments")
@@ -421,8 +572,98 @@ MiniClick.generate_help = function(command_name = null)
                 end if
             end for
         end if
+        return help_text
     end if
+
+    help_text = MiniClick.format_help_banner()
+    help_text = help_text + MiniClick.format_exploit_guide()
+    shown = {}
+
+    for cat in MiniClick.category_order
+        names = []
+        for name in MiniClick.commands.indexes
+            command = MiniClick.commands[name]
+            cmd_cat = command.hasIndex("category") and command.category or "utility"
+            if cmd_cat != cat then continue
+            names.push(name)
+            shown[name] = true
+        end for
+        if names.len == 0 then continue
+        names = MiniClick.sort_strings(names)
+        max_len = 0
+        for name in names
+            if name.len > max_len then max_len = name.len
+        end for
+        if max_len < 10 then max_len = 10
+        section = ""
+        for name in names
+            command = MiniClick.commands[name]
+            padded = MiniClick.pad_command_name(name, max_len)
+            line = "  " + padded.cbold("white") + "  " + command.description.color("grey") + char(10)
+            section = section + line
+        end for
+        help_text = help_text + MiniClick.format_category_heading(cat) + section
+    end for
+
+    other_names = []
+    for name in MiniClick.commands.indexes
+        if shown.hasIndex(name) then continue
+        other_names.push(name)
+    end for
+    if other_names.len > 0 then
+        other_names = MiniClick.sort_strings(other_names)
+        section = ""
+        for name in other_names
+            command = MiniClick.commands[name]
+            cmd_cat = command.hasIndex("category") and command.category or "utility"
+            line = "  " + name.cbold("white") + (" [" + cmd_cat + "] - ").color("dim") + command.description.color("grey") + char(10)
+            section = section + line
+        end for
+        help_text = help_text + MiniClick.format_help_heading("Other") + section
+    end if
+
+    if MiniClick.aliases.indexes.len > 0 then
+        help_text = help_text + MiniClick.format_help_heading("Aliases")
+        for alias in MiniClick.aliases.indexes
+            help_text = help_text + "  " + alias.color("orange") + (" -> ").color("dim") + MiniClick.aliases[alias].cbold("white") + char(10)
+        end for
+    end if
+
+    computer = StateManager.get_focused_computer()
+    if typeof(computer) != "Error" then
+        bins = MiniClick.list_system_binaries(computer)
+        if bins.len > 0 then
+            bins = MiniClick.sort_strings(bins)
+            section = ""
+            for bin_name in bins
+                section = section + "  " + bin_name.color("white") + char(10)
+            end for
+            help_text = help_text + MiniClick.format_help_heading("System (/bin, /usr/bin)") + section
+        end if
+    end if
+
+    help_text = help_text + MiniClick.format_help_heading("Quick reference", "dim")
+    help_text = help_text + "  " + "help <command>".cbold("cyan") + ("     detailed usage + examples".color("grey")) + char(10)
+    help_text = help_text + "  " + "<command> --help".cbold("cyan") + ("   same as above".color("grey")) + char(10)
+    help_text = help_text + "  " + "/bin, /usr/bin".cbold("gold") + ("       system binaries run on the focused shell".color("grey")) + char(10)
     return help_text
+end function
+
+MiniClick.run_bin = function(command_name, extra_args)
+    shell = StateManager.get_focused_shell()
+    if typeof(shell) == "Error" then return shell
+
+    computer = shell.host_computer
+    program = MiniClick.find_in_path(computer, command_name)
+    if program == null then return Error.init("Unknown command: " + command_name)
+
+    params = ""
+    if extra_args.len > 0 then params = extra_args.join(" ")
+
+    result = shell.launch(program, params)
+    if typeof(result) == "string" then return Error.init(result)
+    if result == 0 then return Error.init("Failed to launch: " + program)
+    return null
 end function
 
 // Running Commands
@@ -432,7 +673,7 @@ MiniClick.run = function(args)
         command_name = MiniClick.aliases[command_name]
     end if
     if not MiniClick.commands.hasIndex(command_name) then
-        return Error.init("Unknown command: " + command_name)
+        return MiniClick.run_bin(command_name, args[1:])
     end if
 
     command = MiniClick.commands[command_name]
@@ -478,33 +719,88 @@ end function
 // Utility Functions
 ////////////////////////////////////////////////////
 
-// Checks random IP addresses for an open port 1542 and returns the IP address.
-// @return {string} - The IP address of the hackshop, or null if not found.
-get_hackshop = function()
-    max_attempts = 50
+HackshopManager = {}
+HackshopManager.PORT = 1542
+HackshopManager.MAX_ATTEMPTS = 15000
+HackshopManager.PROGRESS_INTERVAL = 500
+
+HackshopManager.find = function(show_progress = false)
     attempts = 0
-    
-    while attempts < max_attempts
+
+    while attempts < HackshopManager.MAX_ATTEMPTS
+        attempts = attempts + 1
         ip = get_random_ip()
-        
+
+        if show_progress and attempts % HackshopManager.PROGRESS_INTERVAL == 0 then
+            print(WifiManager.tag("*", "cyan") + " Scanning... attempt " + str(attempts) + "/" + str(HackshopManager.MAX_ATTEMPTS))
+        end if
+
         if not is_lan_ip(ip) then
             router = get_router(ip)
-            
             if router != null then
-                ports = router.used_ports
-                
-                for port in ports
-                    if port.port_number == 1542 and not port.is_closed then
+                for port in router.used_ports
+                    if port.port_number == HackshopManager.PORT and not port.is_closed then
                         return router.public_ip
                     end if
                 end for
             end if
         end if
-        
-        attempts = attempts + 1
     end while
-    
+
     return null
+end function
+
+HackshopManager.get_aptclient = function()
+    if not StateManager.cob.hasIndex("aptclient") or StateManager.cob["aptclient"] == null then
+        return Error.init("aptclient not loaded.")
+    end if
+    return StateManager.cob["aptclient"]
+end function
+
+HackshopManager.is_configured = function()
+    apt = HackshopManager.get_aptclient()
+    if typeof(apt) == "Error" then return false
+    apt.update()
+    return not apt.search("metaxploit.so").is_match("not found")
+end function
+
+HackshopManager.add_repo = function(ip)
+    if not is_valid_ip(ip) then return Error.init("Invalid hackshop IP: " + ip)
+
+    apt = HackshopManager.get_aptclient()
+    if typeof(apt) == "Error" then return apt
+
+    apt.update()
+    apt.add_repo(ip)
+    StateManager.cob["hackshop_ip"] = ip
+
+    apt.update()
+    if apt.search("metaxploit.so").is_match("not found") then
+        return Error.init("Added " + ip + " but metaxploit.so still not found.")
+    end if
+
+    out = char(10) + ("Hackshop configured").cbold("green") + char(10)
+    out = out + ("  IP: ").color("dim") + ip.cbold("gold") + char(10)
+    out = out + ("  metaxploit.so is available via apt.").color("green")
+    return out
+end function
+
+HackshopManager.ensure_repo = function()
+    if HackshopManager.is_configured() then return null
+
+    print(("Hackshop not configured. Searching...").color("orange"))
+    ip = HackshopManager.find(true)
+
+    if ip == null then
+        print(("Auto-search failed.").color("red"))
+        ip = user_input("Hackshop IP: ")
+        if ip == null or ip.trim == "" then return Error.init("No hackshop IP provided.")
+        ip = ip.trim
+    else
+        print(("Found hackshop at: ").color("green") + ip.cbold("gold"))
+    end if
+
+    return HackshopManager.add_repo(ip)
 end function
 
 WifiManager = {}
@@ -762,22 +1058,13 @@ StateManager.first_layer = function()
     self.cob["aptclient"] = include_lib("/lib/aptclient.so")
     if self.cob["aptclient"] == null then exit("aptclient.so not found in /lib directory!")
 
-    while true
-        self.cob["aptclient"].update()
-        if not self.cob["aptclient"].search("metaxploit.so").is_match("not found") then break
-        
-        print("Hackshop not found. Attempting auto-search...")
-        hack_shop = get_hackshop()
-        
-        if hack_shop == null then
-            print("Auto-search failed. Enter hackshop IP manually: ")
-            hack_shop = user_input("Hackshop IP: ")
-        else
-            print("Found hackshop at: " + hack_shop)
+    while not HackshopManager.is_configured()
+        result = HackshopManager.ensure_repo()
+        if typeof(result) == "Error" then
+            print(result.message.cbold("red"))
+            continue
         end if
-        
-        if not is_valid_ip(hack_shop) then continue
-        self.cob["aptclient"].add_repo(hack_shop)
+        if result != null then print(result)
     end while
 
     if self.cob["aptclient"].check_upgrade("/lib/librshell.so") then
@@ -1112,7 +1399,12 @@ UtilityCommands.clear = function(args)
 end function
 
 UtilityCommands.help = function(args)
-    return MiniClick.generate_help
+    if args.hasIndex("command") and args["command"] != null and args["command"] != "" then
+        result = MiniClick.generate_help(args["command"])
+        if typeof(result) == "Error" then return result
+        return result
+    end if
+    return MiniClick.generate_help()
 end function
 
 UtilityCommands.set_alias = function(args)
@@ -1156,6 +1448,42 @@ UtilityCommands.crack_md5 = function(args)
     if pass == null then return Error.init("Hash not found.") else return pass
 end function
 
+UtilityCommands.hackshop_cmd = function(args)
+    if args.hasIndex("ip") and args["ip"] != null and args["ip"] != "" then
+        ip = args["ip"]
+        if args["add"] then return HackshopManager.add_repo(ip)
+        return char(10) + ("Hackshop IP: ").color("dim") + ip.cbold("gold")
+    end if
+
+    if not args["force"] and StateManager.cob.hasIndex("hackshop_ip") and StateManager.cob["hackshop_ip"] != null then
+        stored = StateManager.cob["hackshop_ip"]
+        if args["add"] then
+            if HackshopManager.is_configured() then
+                return ("Hackshop already configured: ").color("green") + stored.cbold("gold")
+            end if
+            return HackshopManager.add_repo(stored)
+        end if
+        out = char(10) + ("Cached hackshop: ").color("dim") + stored.cbold("gold")
+        out = out + char(10) + ("  ").color("dim") + "hackshop --force".color("cyan") + ("  search again").color("dim")
+        out = out + char(10) + ("  ").color("dim") + "hackshop --add".color("cyan") + ("       register apt repo").color("dim")
+        return out
+    end if
+
+    print(WifiManager.tag("*", "cyan") + " Searching for hackshop on port " + str(HackshopManager.PORT) + "...")
+    ip = HackshopManager.find(true)
+    if ip == null then
+        return Error.init("Hackshop not found. Use hackshop <ip> --add if you know the address.")
+    end if
+
+    StateManager.cob["hackshop_ip"] = ip
+    if args["add"] then return HackshopManager.add_repo(ip)
+
+    out = char(10) + ("Hackshop found").cbold("green") + char(10)
+    out = out + ("  IP: ").color("dim") + ip.cbold("gold") + char(10)
+    out = out + ("  ").color("dim") + "hackshop --add".cbold("cyan") + ("  register as apt repo").color("dim")
+    return out
+end function
+
 MiniClick.create_command("echo", "Print a message").
     set_category("utility").
     add_argument("message", "The message to print", true).
@@ -1167,8 +1495,9 @@ MiniClick.create_command("clear", "Clear the screen").
     set_function(UtilityCommands["clear"]).
     build()
 
-MiniClick.create_command("help", "Show help text").
+MiniClick.create_command("help", "Show command reference, exploit workflow, and per-command examples").
     set_category("utility").
+    add_argument("command", "Command name for detailed help", false, true).
     set_function(UtilityCommands["help"]).
     build()
 
@@ -1189,6 +1518,14 @@ MiniClick.create_command("crack", "Crack an MD5 hash").
     set_category("utility").
     add_argument("hash", "The hash to crack").
     set_function(UtilityCommands["crack_md5"]).
+    build()
+
+MiniClick.create_command("hackshop", "Find or configure the hackshop apt repository").
+    set_category("utility").
+    add_argument("ip", "Manually specify a hackshop IP", false, true).
+    add_option("add", "Register the hackshop as an apt repo", false, "a", true).
+    add_option("force", "Ignore cached IP and search again", false, "f", true).
+    set_function(UtilityCommands["hackshop_cmd"]).
     build()
 
 ////////////////////////////////////////////////////
@@ -1336,6 +1673,147 @@ ExploitManager.check_libpath = function(libname, libversion)
     return ver_dir
 end function
 
+ExploitManager.has_disk_exploits = function(libname, libversion)
+    c = StateManager.get_home_computer()
+    if typeof(c) == "Error" then return false
+
+    version_path = StateManager.cob["home_path"] + "/exploits/" + libname + "/" + libversion
+    version_dir = c.File(version_path)
+    if version_dir == null or not version_dir.is_folder then return false
+
+    files = version_dir.get_files
+    if files == null or files.len == 0 then return false
+    return true
+end function
+
+ExploitManager.check_exploit = function(libname, libversion, address = null)
+    if not StateManager.cob["exploit_store"].hasIndex(libname) then return false
+    if not StateManager.cob["exploit_store"][libname].hasIndex(libversion) then return false
+    if address != null and not StateManager.cob["exploit_store"][libname][libversion].hasIndex(address) then return false
+    return true
+end function
+
+ExploitManager.load_exploit = function(libname, libversion)
+    c = StateManager.get_home_computer()
+    if typeof(c) == "Error" then return c
+
+    ExploitManager.check_libpath(libname, libversion)
+    version_path = StateManager.cob["home_path"] + "/exploits/" + libname + "/" + libversion
+
+    version_dir = c.File(version_path)
+    if version_dir == null or not version_dir.is_folder then return
+
+    address_files = version_dir.get_files
+    if address_files == null or address_files.len == 0 then return
+
+    for file in address_files
+        address = file.name
+        file_content = file.get_content
+        if file_content == "" then continue
+
+        lines = file_content.split(char(10))[:-1]
+        for exploit in lines
+            exploit_data = exploit.split(" ")
+            if exploit_data.len < 3 then continue
+
+            string = exploit_data[0]
+            user_type = exploit_data[1]
+            object_type = exploit_data[2]
+            ExploitManager.save_exploit(libname, libversion, address, string, [user_type, object_type])
+        end for
+    end for
+end function
+
+ExploitManager.store_exploits = function(libname, libversion)
+    if not StateManager.cob["exploit_store"].hasIndex(libname) then return
+    if not StateManager.cob["exploit_store"][libname].hasIndex(libversion) then return
+
+    c = StateManager.get_home_computer()
+    if typeof(c) == "Error" then return c
+
+    ExploitManager.check_libpath(libname, libversion)
+    version_path = StateManager.cob["home_path"] + "/exploits/" + libname + "/" + libversion
+
+    for address in StateManager.cob["exploit_store"][libname][libversion].indexes
+        address_path = version_path + "/" + address
+        if not c.File(address_path) then
+            c.touch(version_path, address)
+        end if
+
+        string_exploits = ""
+        for string in StateManager.cob["exploit_store"][libname][libversion][address].indexes
+            result_tuple = StateManager.cob["exploit_store"][libname][libversion][address][string]
+            string_exploits = string_exploits + string + " " + result_tuple[0] + " " + result_tuple[1] + char(10)
+        end for
+
+        c.File(address_path).set_content(string_exploits)
+    end for
+end function
+
+ExploitManager.resolve_connect_ip = function(ip, port)
+    if is_lan_ip(ip) then return ip
+    if not is_valid_ip(ip) then return ip
+
+    router = get_router(ip)
+    if router == null then return ip
+
+    port_num = port.to_int
+    if typeof(port_num) != "number" then return ip
+
+    for fwd in router.used_ports
+        if fwd.port_number == port_num and not fwd.is_closed then
+            return router.public_ip
+        end if
+    end for
+
+    return ip
+end function
+
+ExploitManager.shotgun_lib = function(meta_lib, opt_val, info = null)
+    libname = meta_lib.lib_name
+    libversion = meta_lib.version
+    if opt_val == null then opt_val = ""
+
+    if not ExploitManager.check_exploit(libname, libversion) then
+        addresses = ExploitManager.get_addresses(meta_lib)
+    else
+        addresses = StateManager.cob["exploit_store"][libname][libversion].indexes
+    end if
+    if addresses == null then addresses = []
+
+    metax = ExploitManager.get_metax()
+    if typeof(metax) == "Error" then return metax
+
+    hits = 0
+    for address in addresses
+        if not ExploitManager.check_exploit(libname, libversion, address) then
+            unparsed = metax.scan_address(meta_lib, address)
+            strings = ExploitManager.parse_address(unparsed)
+        else
+            strings = StateManager.cob["exploit_store"][libname][libversion][address].indexes
+        end if
+
+        for string in strings
+            result = meta_lib.overflow(address, string, opt_val)
+            if typeof(result) == "string" then return Error.init("Shotgun aborted: " + result)
+
+            captured = ExploitManager.capture_result(address, string, result)
+            if captured != null then
+                if info != null and typeof(result) == "file" then
+                    StateManager.cob["focused_object"]["info"]["pub_ip"] = info["pub_ip"]
+                    StateManager.cob["focused_object"]["info"]["local_ip"] = info["local_ip"]
+                end if
+                hits = hits + 1
+            end if
+        end for
+    end for
+
+    if hits > 0 then
+        return char(10) + ("Shotgun finished - ").color("green") + str(hits).cbold("gold") + (" exploit(s) captured.").color("green")
+    end if
+    return char(10) + ("Shotgun found no usable exploits.").cbold("red")
+end function
+
 ExploitManager.get_metax = function()
     metax = StateManager.cob["remote_metax"]
     if metax == null then metax = StateManager.cob["home_metax"]
@@ -1358,13 +1836,18 @@ ExploitManager.store_active_lib = function(lib, ip = null, port = null)
 end function
 
 ExploitManager.format_session_banner = function(lib)
-    out = char(10) + ("Session active").cbold("green") + char(10)
+    out = char(10) + ("Library session active").cbold("green") + char(10)
+    out = out + MiniClick.format_help_rule(22) + char(10)
     if StateManager.cob["active_ip"] != null then
         out = out + ("  Target:  ").color("dim") + StateManager.cob["active_ip"].cbold("gold") + ":" + str(StateManager.cob["active_port"]).color("cyan") + char(10)
     end if
     out = out + ("  Library: ").color("dim") + lib.lib_name.cbold("white") + char(10)
     out = out + ("  Version: ").color("dim") + lib.version.color("gold") + char(10)
-    out = out + ("  Next:    ").color("dim") + "scan".cbold("white") + (" to pick shell/computer/file").color("dim")
+    out = out + char(10) + ("  Next step").color("dim") + char(10)
+    out = out + "    " + "scan".cbold("green") + ("       interactive menu - pick shell, computer, or file".color("grey")) + char(10)
+    out = out + "    " + "auto".cbold("white") + ("        try simple exploits automatically".color("grey")) + char(10)
+    out = out + "    " + "exploits".cbold("white") + ("     view cached payloads for this library".color("grey")) + char(10)
+    out = out + "    " + "help scan".cbold("cyan") + ("     full scan options and examples".color("grey"))
     return out
 end function
 
@@ -1373,17 +1856,20 @@ ExploitManager.connect = function(ip, port)
     if typeof(port) != "number" then return Error.init("Invalid port: " + port)
     if not is_valid_ip(ip) then return Error.init("Invalid IP address: " + ip)
 
+    connect_ip = ExploitManager.resolve_connect_ip(ip, port)
+
     metax = ExploitManager.get_metax()
     if typeof(metax) == "Error" then return metax
 
-    session = metax.net_use(ip, port)
-    if session == null then return Error.init("net_use failed for " + ip + ":" + port)
+    session = metax.net_use(connect_ip, port)
+    if session == null then return Error.init("net_use failed for " + connect_ip + ":" + port)
 
     lib = session.dump_lib
-    if lib == null then return Error.init("dump_lib returned null for " + ip + ":" + port)
+    if lib == null then return Error.init("dump_lib returned null for " + connect_ip + ":" + port)
 
     StateManager.cob["active_session"] = session
-    ExploitManager.store_active_lib(lib, ip, port)
+    ExploitManager.store_active_lib(lib, connect_ip, port)
+    ExploitManager.load_exploit(lib.lib_name, lib.version)
     return lib
 end function
 
@@ -1395,6 +1881,7 @@ ExploitManager.load_local = function(path)
     if lib == null then return Error.init("Failed to load library: " + path)
 
     ExploitManager.store_active_lib(lib, null, null)
+    ExploitManager.load_exploit(lib.lib_name, lib.version)
     return lib
 end function
 
@@ -1611,11 +2098,30 @@ ExploitManager.format_catalog_menu = function(catalog, try_all = false, access_f
         out = out + char(10) + ("Filter: ").color("dim") + access_filter.cbold("orange") + ("  (").color("dim") + "a".color("cyan") + (" = show all)").color("dim")
     end if
     out = out + char(10) + ExploitManager.format_session_help()
+    out = out + char(10) + ExploitManager.format_catalog_legend()
+    return out
+end function
+
+ExploitManager.format_catalog_legend = function()
+    out = ("Legend: ").color("dim")
+    out = out + (" ok").color("green") + (" = tested  ").color("dim")
+    out = out + ("*").color("orange") + (" = needs --opt arg  ").color("dim")
+    out = out + ("?").color("dim") + (" = not tested yet").color("dim")
     return out
 end function
 
 ExploitManager.format_session_help = function()
-    return ("Commands: ").color("dim") + "[#]".cbold("gold") + (" run  ").color("dim") + "r".color("cyan") + (" refresh  ").color("dim") + "f shell|computer|file".color("cyan") + (" filter  ").color("dim") + "a".color("cyan") + (" all  ").color("dim") + "q".color("red") + (" quit").color("dim")
+    out = char(10) + ("Scan controls").cbold("cyan") + char(10)
+    out = out + MiniClick.format_help_rule(13) + char(10)
+    out = out + "  " + "[number]".cbold("gold") + ("  run that exploit (prompts for arg if needed)".color("grey")) + char(10)
+    out = out + "  " + "r".cbold("cyan") + (" / refresh   re-test and rebuild the list".color("grey")) + char(10)
+    out = out + "  " + "f".cbold("cyan") + (" shell       show only shell exploits".color("grey")) + char(10)
+    out = out + "  " + "f".cbold("cyan") + (" computer    show only computer exploits".color("grey")) + char(10)
+    out = out + "  " + "f".cbold("cyan") + (" file        show only file exploits".color("grey")) + char(10)
+    out = out + "  " + "a".cbold("cyan") + (" / all       clear filter, show everything".color("grey")) + char(10)
+    out = out + "  " + "h".cbold("cyan") + (" / help      show this help".color("grey")) + char(10)
+    out = out + "  " + "q".cbold("red") + (" / quit      leave scan (keeps last result)".color("grey"))
+    return out
 end function
 
 ExploitManager.prompt_opt_if_needed = function(entry)
@@ -1777,29 +2283,26 @@ ExploitManager.capture_result = function(address, payload, result)
     return out
 end function
 
-ExploitManager.auto_exploit = function(try_all = false)
-    lib = ExploitManager.get_active_lib()
-    if typeof(lib) == "Error" then return lib
-
-    metax = ExploitManager.get_metax()
-    if typeof(metax) == "Error" then return metax
-
+ExploitManager.try_auto_pass = function(lib, metax, try_requirements, default_opt = null)
     libname = lib.lib_name
     libver = lib.version
     saved = ExploitManager.get_exploits(libname, libver)
+    opt = default_opt
+    if opt == null then opt = ""
 
     for addr in saved.indexes
         addr_map = saved[addr]
         for payload in addr_map.indexes
-            result = lib.overflow(addr, payload)
+            result = lib.overflow(addr, payload, opt)
             captured = ExploitManager.capture_result(addr, payload, result)
             if captured != null then return captured
         end for
     end for
 
     addresses = metax.scan(lib)
-    if addresses == null or addresses.len == 0 then return Error.init("Scan returned no addresses.")
+    if addresses == null then addresses = []
     StateManager.cob["active_addresses"] = addresses
+    if addresses.len == 0 and saved.len == 0 then return null
 
     for addr in addresses
         raw = metax.scan_address(lib, addr)
@@ -1807,16 +2310,125 @@ ExploitManager.auto_exploit = function(try_all = false)
 
         payloads = ExploitManager.parse_payloads(raw)
         for entry in payloads
-            if entry.has_requirement and not try_all then continue
-            result = lib.overflow(addr, entry.name)
+            if entry.has_requirement and not try_requirements then continue
+            result = lib.overflow(addr, entry.name, opt)
             captured = ExploitManager.capture_result(addr, entry.name, result)
             if captured != null then return captured
         end for
     end for
 
+    return null
+end function
+
+ExploitManager.auto_exploit = function(try_all = false, default_opt = null)
+    lib = ExploitManager.get_active_lib()
+    if typeof(lib) == "Error" then return lib
+
+    metax = ExploitManager.get_metax()
+    if typeof(metax) == "Error" then return metax
+
+    captured = ExploitManager.try_auto_pass(lib, metax, false, null)
+    if captured != null then return captured
+
+    if try_all or default_opt != null then
+        captured = ExploitManager.try_auto_pass(lib, metax, true, default_opt)
+        if captured != null then return captured
+    end if
+
     hint = "Try ".color("dim") + "scan --all".cbold("white") + (" to list and pick exploits with requirements.").color("dim")
-    if not try_all then hint = hint + char(10) + ("Or run ").color("dim") + "auto --all".cbold("orange") + (" to brute-force every payload.").color("dim")
+    if not try_all and default_opt == null then
+        hint = hint + char(10) + ("Or run ").color("dim") + "auto --all".cbold("orange") + (" to brute-force every payload.").color("dim")
+    end if
+    if default_opt == null then
+        hint = hint + char(10) + ("Or run ").color("dim") + "hack <ip> <port> <bounce_lan>".cbold("gold") + (" with a LAN IP for bounce exploits.").color("dim")
+    end if
     return char(10) + ("Auto exploit failed.").cbold("red") + char(10) + hint
+end function
+
+ExploitManager.hack = function(public_ip, port, bounce_lan = null)
+    port_num = port.to_int
+    if typeof(port_num) != "number" then return Error.init("Invalid port: " + port)
+    if not is_valid_ip(public_ip) and nslookup(public_ip) == "Not found" then
+        return Error.init("Invalid IP address or domain: " + public_ip)
+    end if
+    if bounce_lan != null and bounce_lan != "" and not is_valid_ip(bounce_lan) then
+        return Error.init("Invalid bounce LAN IP: " + bounce_lan)
+    end if
+
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    if not c.is_network_active then
+        if not WifiManager.ensure_wifi() then return Error.init("No network connection.")
+    end if
+
+    log = char(10) + ("Hack started").cbold("gold") + char(10)
+    log = log + MiniClick.format_help_rule(12) + char(10)
+
+    print(log)
+    print(WifiManager.tag("*", "cyan") + " [1/3] Mapping " + public_ip.cbold("gold") + "...")
+
+    map_data = NetworkMapper.scan(public_ip)
+    if typeof(map_data) == "Error" then return map_data
+    StateManager.cob["last_map"] = map_data
+
+    lan_ip = NetworkMapper.find_lan_for_port(map_data, port_num)
+    if lan_ip == null then
+        return Error.init("Port " + port_num + " not found on " + public_ip + ". Run map " + public_ip + " to inspect ports.")
+    end if
+
+    connect_ip = map_data.target
+    if is_lan_ip(public_ip) then connect_ip = lan_ip
+
+    print(WifiManager.tag("+", "green") + " Port " + str(port_num).color("cyan") + (" forwards to ").color("dim") + lan_ip.cbold("gold"))
+    print(WifiManager.tag("*", "cyan") + " [2/3] Connecting via " + connect_ip.cbold("gold") + ":" + str(port_num).color("cyan") + "...")
+
+    lib = ExploitManager.connect(connect_ip, port_num)
+    if typeof(lib) == "Error" then return lib
+
+    print(WifiManager.tag("+", "green") + " Loaded " + lib.lib_name.cbold("white") + (" v").color("dim") + lib.version.color("gold"))
+    print(WifiManager.tag("*", "cyan") + " [3/3] Auto-exploiting...")
+
+    result = ExploitManager.auto_exploit(false, null)
+    used_bounce = null
+    success = typeof(result) == "string" and result.indexOf("Exploit succeeded") != null
+
+    if not success then
+        bounce_list = []
+        if bounce_lan != null and bounce_lan != "" then
+            bounce_list.push(bounce_lan)
+        else
+            bounce_list = NetworkMapper.get_bounce_candidates(map_data, port_num, lan_ip)
+        end if
+
+        for bounce in bounce_list
+            print(WifiManager.tag("*", "cyan") + " Retrying with bounce LAN " + bounce.cbold("orange") + "...")
+            result = ExploitManager.auto_exploit(true, bounce)
+            if typeof(result) == "Error" then continue
+            if typeof(result) == "string" and result.indexOf("Exploit succeeded") != null then
+                used_bounce = bounce
+                success = true
+                break
+            end if
+        end for
+    end if
+
+    if typeof(result) == "Error" then return result
+
+    if typeof(result) == "string" and result.indexOf("Exploit succeeded") != null then
+        out = char(10) + ("Hack complete").cbold("green") + char(10)
+        out = out + ("  Target:  ").color("dim") + public_ip.cbold("gold") + ":" + str(port_num).color("cyan") + char(10)
+        out = out + ("  Service: ").color("dim") + lan_ip.color("gold") + char(10)
+        if used_bounce != null then
+            out = out + ("  Bounce:  ").color("dim") + used_bounce.color("orange") + char(10)
+        end if
+        out = out + result
+        return out
+    end if
+
+    out = char(10) + ("Hack failed on ").color("red") + public_ip.cbold("gold") + ":" + str(port_num).color("cyan") + char(10)
+    out = out + ("  Tip: run ").color("dim") + ("hack " + public_ip + " " + port_num + " <lan_ip>").cbold("gold") + (" or ").color("dim") + "scan --all".cbold("white") + char(10)
+    out = out + result
+    return out
 end function
 
 NetworkMapper = {}
@@ -1890,6 +2502,62 @@ NetworkMapper.build_port_entry = function(router, port, scan_ip)
     end for
 
     return entry
+end function
+
+NetworkMapper.get_bounce_candidates = function(data, port_num, service_lan = null)
+    candidates = []
+    seen = {}
+
+    add = function(ip)
+        if ip == null or ip == "" then return
+        if seen.hasIndex(ip) then return
+        seen[ip] = true
+        candidates.push(ip)
+    end function
+
+    add(service_lan)
+    if data.router != null then
+        add(data.router.local_ip)
+        for device in data.router.devices_lan_ip
+            add(device)
+        end for
+    end if
+
+    for key in data.devices.indexes
+        add(key)
+    end for
+
+    return candidates
+end function
+
+NetworkMapper.find_lan_for_port = function(data, port_num)
+    port_num = port_num.to_int
+    if typeof(port_num) != "number" then return null
+
+    if data.router != null then
+        for port in data.router.used_ports
+            if port.port_number == port_num and not port.is_closed then
+                return port.get_lan_ip
+            end if
+        end for
+    end if
+
+    open_match = null
+    any_match = null
+    for item in data.devices
+        device = item.value
+        for port_entry in device.ports
+            if port_entry.number != port_num then continue
+            if port_entry.address != null and any_match == null then any_match = port_entry.address
+            if port_entry.status == "open" then
+                if port_entry.address != null then return port_entry.address
+                open_match = device.address
+            end if
+        end for
+    end for
+
+    if open_match != null then return open_match
+    return any_match
 end function
 
 NetworkMapper.scan = function(target)
@@ -2109,12 +2777,10 @@ FileManager.resolve_path = function(path)
     return current_path + "/" + path
 end function
 
-FileManager.FILE_EXPLORER_CANDIDATES = ["FileExplorer.exe", "/bin/FileExplorer", "/bin/FileExplorer.exe"]
-
 FileManager.find_file_explorer = function(computer)
-    for candidate in FileManager.FILE_EXPLORER_CANDIDATES
-        if computer.File(candidate) != null then return candidate
-    end for
+    found = MiniClick.find_in_path(computer, "FileExplorer")
+    if found != null then return found
+    if computer.File("FileExplorer.exe") != null then return "FileExplorer.exe"
     return null
 end function
 
@@ -2125,6 +2791,188 @@ FileManager.get_file = function(path)
     f = c.File(resolved)
     if f == null then return Error.init("File not found: " + resolved)
     return f
+end function
+
+FileManager.get_cwd = function()
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    folder = c.File(current_path)
+    if folder == null then return Error.init("Current path not found: " + current_path)
+    if not folder.is_folder then return Error.init("Not a directory: " + current_path)
+    return folder
+end function
+
+FileManager.resolve_entry = function(name)
+    cwd = FileManager.get_cwd()
+    if typeof(cwd) == "Error" then return cwd
+    if name == "." then return cwd
+    if name == ".." then
+        if cwd.parent != null then return cwd.parent
+        return cwd
+    end if
+    entry = cwd.get_files.first("name", name)
+    if entry != null then return entry
+    entry = cwd.get_folders.first("name", name)
+    if entry != null then return entry
+    return Error.init("Not found: " + name)
+end function
+
+ComputerCommands = {}
+ComputerCommands.classID = "ComputerCommands"
+
+ComputerCommands.view_procs = function(args)
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    return format_columns(c.show_procs)
+end function
+
+ComputerCommands.kill_proc = function(args)
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    pid = args["pid"].to_int
+    if typeof(pid) != "number" then return Error.init("Invalid PID: " + args["pid"])
+    return c.close_program(pid)
+end function
+
+ComputerCommands.add_user = function(args)
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    return c.create_user(args["username"], args["password"])
+end function
+
+ComputerCommands.remove_user = function(args)
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    return c.delete_user(args["username"], args["remove_home"])
+end function
+
+ComputerCommands.add_group = function(args)
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    return c.create_group(args["username"], args["groupname"])
+end function
+
+ComputerCommands.remove_group = function(args)
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    return c.delete_group(args["username"], args["groupname"])
+end function
+
+ComputerCommands.create_file = function(args)
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    return c.touch(args["path"], args["filename"])
+end function
+
+ComputerCommands.wipe_log = function(args)
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    r = c.touch("/var", "fstab")
+    if typeof(r) == "string" then return Error.init("Error creating file: " + r)
+    f = c.File("/var/fstab")
+    if f == null then return Error.init("Error accessing file after creation.")
+    f.set_content("rosebud")
+    r = f.move("/var", "system.log")
+    if typeof(r) == "string" then return Error.init("Error moving file: " + r)
+    return ("System log wiped.").color("green")
+end function
+
+ComputerCommands.create_folder = function(args)
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    return c.create_folder(args["path"], args["foldername"])
+end function
+
+ShellCommands = {}
+ShellCommands.classID = "ShellCommands"
+
+ShellCommands.drop_shell = function(args)
+    s = StateManager.get_focused_shell()
+    if typeof(s) == "Error" then return s
+    confirm = user_input("Drop to native shell? (y/n): ")
+    if confirm == "y" then
+        print("Dropping to shell...")
+        return start_terminal(s)
+    end if
+end function
+
+ShellCommands.build_file = function(args)
+    s = StateManager.get_focused_shell()
+    if typeof(s) == "Error" then return s
+    return build(s, args["source_path"], args["destination_path"], args["can_import"])
+end function
+
+ShellCommands.run_command = function(args)
+    s = StateManager.get_focused_shell()
+    if typeof(s) == "Error" then return s
+    program = args["program"]
+    params = args["params"].join(" ")
+    return launch(s, program, params)
+end function
+
+ShellCommands.connect_service = function(args)
+    s = StateManager.get_focused_shell()
+    if typeof(s) == "Error" then return s
+
+    service = args["service"]
+    ip = args["ip"]
+    port = args["port"].to_int
+    user = args["user"]
+    password = args["password"]
+
+    if service == "ssh" then
+        shell = s.connect_service(ip, port, user, password, "ssh")
+    else if service == "ftp" then
+        shell = s.connect_service(ip, port, user, password, "ftp")
+    else
+        return Error.init("Unsupported service: " + service + " (use ssh or ftp)")
+    end if
+
+    if typeof(shell) == "string" then return Error.init("Connection failed: " + shell)
+    if shell == null then return Error.init("Unknown error connecting to service.")
+
+    result = StateManager.set_object(shell)
+    if result == "string" then return Error.init("Error setting object: " + result)
+    StateManager.cob["focused_object"]["info"]["user"] = user
+    return ("Connected via ").color("green") + service.cbold("white") + (" as ").color("green") + user.cbold("cyan")
+end function
+
+ShellCommands.try_ping = function(args)
+    s = StateManager.get_focused_shell()
+    if typeof(s) == "Error" then return s
+    is_pingable = ping(s, args["ip"])
+    if typeof(is_pingable) == "string" then return is_pingable
+    if is_pingable then return ("Ping successful: ").color("green") + args["ip"].cbold("gold")
+    return ("Ping failed: ").color("red") + args["ip"].color("gold")
+end function
+
+ShellCommands.try_sudo = function(args)
+    s = StateManager.get_focused_shell()
+    if typeof(s) == "Error" then return s
+    result = get_shell(args["user"], args["password"])
+    if result == null or typeof(result) != "shell" then return Error.init("Invalid user or password.")
+    StateManager.set_object(result)
+    StateManager.cob["focused_object"]["info"]["user"] = args["user"]
+    return ("Sudo to ").color("green") + args["user"].cbold("cyan") + (" succeeded.").color("green")
+end function
+
+ShellCommands.pivot_host = function(args)
+    s = StateManager.get_focused_shell()
+    if typeof(s) == "Error" then return s
+
+    home_shell = StateManager.get_home_shell()
+    if typeof(home_shell) == "Error" then return home_shell
+
+    magpie_path = StateManager.cob["home_path"] + "/magpie"
+    dest = "/tmp"
+    if s.host_computer.File("/tmp") != null then dest = "/tmp"
+
+    result = home_shell.scp(magpie_path, dest, s, true)
+    if typeof(result) == "string" then return Error.init("Error dropping magpie: " + result)
+
+    result = launch(s, dest + "/magpie")
+    if typeof(result) == "string" then return Error.init("Error launching magpie: " + result)
+    return ("Pivot launched on ").color("green") + StateManager.cob["focused_object"].info.local_ip.cbold("gold")
 end function
 
 ExploitCommands = {}
@@ -2257,6 +3105,12 @@ ExploitCommands.auto_cmd = function(args)
     return ExploitManager.auto_exploit(args["all"])
 end function
 
+ExploitCommands.hack_cmd = function(args)
+    bounce = null
+    if args.hasIndex("bounce") then bounce = args["bounce"]
+    return ExploitManager.hack(args["ip"], args["port"], bounce)
+end function
+
 ExploitCommands.exploits_cmd = function(args)
     lib = ExploitManager.get_active_lib()
     if typeof(lib) == "Error" then return lib
@@ -2277,7 +3131,7 @@ ExploitCommands.exploits_cmd = function(args)
             out = out + ("  ").color("dim") + payload.cbold("white") + char(10)
         end for
     end for
-    out = out + char(10) + ("Run ").color("dim") + "scan".cbold("white") + (" to pick from this list.").color("dim")
+    out = out + char(10) + ("Run ").color("dim") + "scan".cbold("green") + (" to execute one, or ").color("dim") + "overflow <addr> <payload>".cbold("white") + (" manually.").color("dim")
     return out
 end function
 
@@ -2288,14 +3142,15 @@ FileCommands.put = function(args)
     src = FileManager.resolve_path(args["source"])
     dest = FileManager.resolve_path(args["destination"])
 
-    home_shell = StateManager.get_home_shell()
-    if typeof(home_shell) == "Error" then return home_shell
+    from_shell = StateManager.get_home_shell()
+    if args["from_relative"] then from_shell = StateManager.get_relative_shell()
+    if typeof(from_shell) == "Error" then return from_shell
 
     foc_shell = StateManager.get_focused_shell()
     if typeof(foc_shell) == "Error" then return foc_shell
 
-    home_file = home_shell.host_computer.File(src)
-    if home_file == null then return Error.init("Source not found: " + src)
+    from_file = from_shell.host_computer.File(src)
+    if from_file == null then return Error.init("Source not found: " + src)
 
     dest_folder = dest
     if dest_folder[-1:] != "/" then
@@ -2303,7 +3158,7 @@ FileCommands.put = function(args)
         if slash != null then dest_folder = dest_folder[:slash]
     end if
 
-    result = home_shell.scp(src, dest_folder, foc_shell, true)
+    result = from_shell.scp(src, dest_folder, foc_shell, true)
     if typeof(result) == "string" then return Error.init(result)
     return ("Uploaded ").color("green") + src.color("gold") + (" -> ").color("green") + dest.color("gold")
 end function
@@ -2312,13 +3167,14 @@ FileCommands.get = function(args)
     src = FileManager.resolve_path(args["source"])
     dest = FileManager.resolve_path(args["destination"])
 
-    home_shell = StateManager.get_home_shell()
-    if typeof(home_shell) == "Error" then return home_shell
+    to_shell = StateManager.get_home_shell()
+    if args["to_relative"] then to_shell = StateManager.get_relative_shell()
+    if typeof(to_shell) == "Error" then return to_shell
 
     foc_shell = StateManager.get_focused_shell()
     if typeof(foc_shell) == "Error" then return foc_shell
 
-    result = foc_shell.scp(src, dest, home_shell, false)
+    result = foc_shell.scp(src, dest, to_shell, false)
     if typeof(result) == "string" then return Error.init(result)
     return ("Downloaded ").color("green") + src.color("gold") + (" -> ").color("green") + dest.color("gold")
 end function
@@ -2389,6 +3245,215 @@ FileCommands.file_cmd = function(args)
     return out
 end function
 
+FileCommands.cd = function(args)
+    path = args["path"]
+    if path == null or path == "" then return current_path.color("gold")
+
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+
+    if path == "-" then
+        if not StateManager.cob.hasIndex("prev_path") then return Error.init("No previous directory.")
+        tmp = current_path
+        current_path = StateManager.cob["prev_path"]
+        StateManager.cob["prev_path"] = tmp
+        return current_path.color("gold")
+    end if
+
+    resolved = FileManager.resolve_path(path)
+    folder = c.File(resolved)
+    if folder == null then return Error.init("Path not found: " + resolved)
+    if not folder.is_folder then return Error.init("Not a directory: " + resolved)
+
+    StateManager.cob["prev_path"] = current_path
+    current_path = folder.path
+    return current_path.color("gold")
+end function
+
+FileCommands.write_file = function(args)
+    if args["filename"].indexOf("/") == null then
+        f = FileManager.resolve_entry(args["filename"])
+    else
+        f = FileManager.get_file(args["filename"])
+    end if
+    if typeof(f) == "Error" then return f
+    if f.is_folder then return Error.init("Cannot write to a directory.")
+    content = args["content"].join(" ")
+    result = f.set_content(content)
+    if result == true then return ("Written: ").color("green") + args["filename"].color("gold")
+    return Error.init("Write failed: " + result)
+end function
+
+FileCommands.rm = function(args)
+    f = FileManager.resolve_entry(args["filename"])
+    if typeof(f) == "Error" then return f
+    if f.is_folder then return Error.init("Is a directory. Use rmdir.")
+    result = f.delete
+    if result != "" then return Error.init("Delete failed: " + result)
+    return ("Deleted: ").color("green") + args["filename"].color("gold")
+end function
+
+FileCommands.rmdir = function(args)
+    f = FileManager.resolve_entry(args["dirname"])
+    if typeof(f) == "Error" then return f
+    if not f.is_folder then return Error.init("Not a directory.")
+    result = f.delete
+    if result != "" then return Error.init("Delete failed: " + result)
+    return ("Removed: ").color("green") + args["dirname"].color("gold")
+end function
+
+FileCommands.chmod = function(args)
+    f = FileManager.resolve_entry(args["filename"])
+    if typeof(f) == "Error" then return f
+    permissions = args["permissions"]
+    recursive = args["recursive"]
+    if typeof(permissions.to_int) != "number" then return Error.init("Invalid permissions: " + permissions)
+
+    result = f.chmod("u-rwx", recursive)
+    if result != "" then return Error.init("chmod failed: " + result)
+    f.chmod("g-rwx", recursive)
+    f.chmod("o-rwx", recursive)
+
+    user_octal = permissions[0].to_int
+    group_octal = permissions[1].to_int
+    other_octal = permissions[2].to_int
+
+    user_perms = "u+"
+    if bitAnd(user_octal, 4) then user_perms = user_perms + "r"
+    if bitAnd(user_octal, 2) then user_perms = user_perms + "w"
+    if bitAnd(user_octal, 1) then user_perms = user_perms + "x"
+
+    group_perms = "g+"
+    if bitAnd(group_octal, 4) then group_perms = group_perms + "r"
+    if bitAnd(group_octal, 2) then group_perms = group_perms + "w"
+    if bitAnd(group_octal, 1) then group_perms = group_perms + "x"
+
+    other_perms = "o+"
+    if bitAnd(other_octal, 4) then other_perms = other_perms + "r"
+    if bitAnd(other_octal, 2) then other_perms = other_perms + "w"
+    if bitAnd(other_octal, 1) then other_perms = other_perms + "x"
+
+    f.chmod(user_perms, recursive)
+    f.chmod(group_perms, recursive)
+    f.chmod(other_perms, recursive)
+    return ("Permissions changed: ").color("green") + args["filename"].color("gold")
+end function
+
+FileCommands.chgrp = function(args)
+    f = FileManager.resolve_entry(args["filename"])
+    if typeof(f) == "Error" then return f
+    result = f.set_group(args["group"], args["recursive"])
+    if result != null and result != "" then return Error.init("chgrp failed: " + result)
+    return ("Group changed: ").color("green") + args["filename"].color("gold")
+end function
+
+FileCommands.chown = function(args)
+    f = FileManager.resolve_entry(args["filename"])
+    if typeof(f) == "Error" then return f
+    result = f.set_owner(args["owner"], args["recursive"])
+    if result != null and result != "" then return Error.init("chown failed: " + result)
+    return ("Owner changed: ").color("green") + args["filename"].color("gold")
+end function
+
+FileCommands.cp = function(args)
+    f = FileManager.resolve_entry(args["filename"])
+    if typeof(f) == "Error" then return f
+    result = f.copy(args["destination"], args["newname"])
+    if typeof(result) == "string" then return Error.init("Copy failed: " + result)
+    return ("Copied: ").color("green") + args["filename"].color("gold")
+end function
+
+FileCommands.mv = function(args)
+    f = FileManager.resolve_entry(args["filename"])
+    if typeof(f) == "Error" then return f
+    result = f.move(args["destination"], args["newname"])
+    if typeof(result) == "string" then return Error.init("Move failed: " + result)
+    return ("Moved: ").color("green") + args["filename"].color("gold")
+end function
+
+FileCommands.rename = function(args)
+    f = FileManager.resolve_entry(args["filename"])
+    if typeof(f) == "Error" then return f
+    result = f.rename(args["newname"])
+    if typeof(result) == "string" then return Error.init("Rename failed: " + result)
+    return ("Renamed to: ").color("green") + args["newname"].color("gold")
+end function
+
+ExploitCommands.target_cmd = function(args)
+    ip = args["ip"]
+    port = args["port"]
+    opt = args["opt"]
+    if opt == null then opt = ""
+
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    if not c.is_network_active then
+        if not WifiManager.ensure_wifi() then return Error.init("No network connection.")
+    end if
+
+    lib = ExploitManager.connect(ip, port)
+    if typeof(lib) == "Error" then return lib
+
+    info = {"pub_ip": ip, "local_ip": ip}
+    if not is_lan_ip(ip) then
+        router = get_router(ip)
+        if router != null then info["local_ip"] = router.local_ip
+    end if
+
+    result = ExploitManager.auto_exploit(opt != "", opt)
+    if typeof(result) == "string" and result.indexOf("Exploit succeeded") != null then return result
+
+    if args["shotgun"] then
+        return ExploitManager.shotgun_lib(lib, opt, info)
+    end if
+
+    out = char(10) + ("Target auto failed on ").color("red") + ip.cbold("gold") + ":" + str(port).color("cyan") + char(10)
+    out = out + ("  Try ").color("dim") + "scan".cbold("green") + (", ").color("dim") + "target ... --shotgun".cbold("orange") + (", or ").color("dim") + "hack".cbold("gold") + (" for full recon.").color("dim") + char(10)
+    out = out + result
+    return out
+end function
+
+ExploitCommands.local_cmd = function(args)
+    path = args["path"]
+    opt = args["opt"]
+    if opt == null then opt = ""
+
+    lib = ExploitManager.load_local(path)
+    if typeof(lib) == "Error" then return lib
+
+    info = {
+        "pub_ip": StateManager["relative_object"]["info"]["pub_ip"],
+        "local_ip": StateManager["relative_object"]["info"]["local_ip"],
+    }
+
+    result = ExploitManager.auto_exploit(opt != "", opt)
+    if typeof(result) == "string" and result.indexOf("Exploit succeeded") != null then return result
+
+    if args["shotgun"] then
+        return ExploitManager.shotgun_lib(lib, opt, info)
+    end if
+
+    out = char(10) + ("Local auto failed on ").color("red") + path.color("gold") + char(10)
+    out = out + ("  Try ").color("dim") + "scan".cbold("green") + (" or ").color("dim") + "local ... --shotgun".cbold("orange") + char(10)
+    out = out + result
+    return out
+end function
+
+ExploitCommands.shotgun_cmd = function(args)
+    lib = ExploitManager.get_active_lib()
+    if typeof(lib) == "Error" then return lib
+
+    opt = args["opt"]
+    if opt == null then opt = ""
+
+    info = null
+    if StateManager.cob["active_ip"] != null then
+        info = {"pub_ip": StateManager.cob["active_ip"], "local_ip": StateManager.cob["active_ip"]}
+    end if
+
+    return ExploitManager.shotgun_lib(lib, opt, info)
+end function
+
 MiniClick.create_command("whois", "Look up WHOIS info for an IP or domain").
     set_category("recon").
     add_argument("target", "IP address or domain name").
@@ -2401,7 +3466,7 @@ MiniClick.create_command("enum", "Enumerate router, ports, and LAN devices").
     set_function(ExploitCommands["enum_cmd"]).
     build()
 
-MiniClick.create_command("map", "WHOIS + network map (whois + nmap) for an IP or domain").
+MiniClick.create_command("map", "Step 1: WHOIS + network map - find open ports and LAN devices").
     set_category("recon").
     add_argument("target", "IP address or domain (optional, shows last scan)", false, true).
     set_function(ExploitCommands["map_cmd"]).
@@ -2414,66 +3479,98 @@ MiniClick.create_command("smtp", "SMTP user enumeration").
     set_function(ExploitCommands["smtp_cmd"]).
     build()
 
-MiniClick.create_command("connect", "Connect to a remote port and load its library").
+MiniClick.create_command("connect", "Step 2: attach to an open port and load its .so library").
     set_category("exploit").
-    add_argument("ip", "Target IP address").
-    add_argument("port", "Target port number").
+    add_argument("ip", "LAN IP from map (the device behind the port)").
+    add_argument("port", "Open port number from map").
     set_function(ExploitCommands["connect_cmd"]).
     build()
 
-MiniClick.create_command("loadlib", "Load a local library for testing").
+MiniClick.create_command("loadlib", "Load a local .so library instead of connecting remotely").
     set_category("exploit").
     add_argument("path", "Library path e.g. /lib/init.so").
     set_function(ExploitCommands["loadlib_cmd"]).
     build()
 
-MiniClick.create_command("libinfo", "Show the active library session").
+MiniClick.create_command("libinfo", "Show the active library session and suggested next commands").
     set_category("exploit").
     set_function(ExploitCommands["libinfo_cmd"]).
     build()
 
-MiniClick.create_command("scan", "Interactive exploit browser - pick shell/computer/file from a menu").
+MiniClick.create_command("scan", "Step 3: browse overflows and pick one by number to gain access").
     set_category("exploit").
-    add_option("all", "Include and test payloads marked with requirements", false, null, true).
-    add_option("no_discover", "Skip auto-testing unknown payloads", false, null, true).
-    add_option("pick", "Select exploit by number without prompting", null).
-    add_option("opt", "Optional overflow argument for selected exploit", "").
+    add_option("all", "Also test payloads that need an extra argument (LAN IP, password, path)", false, null, true).
+    add_option("no_discover", "List payloads only; do not auto-test unknown ones", false, null, true).
+    add_option("pick", "Run exploit N immediately without the interactive menu", null).
+    add_option("opt", "Pass overflow argument when using --pick (for * payloads)", "").
     set_function(ExploitCommands["scan_cmd"]).
     build()
 
-MiniClick.create_command("probe", "Pick exploits at a specific memory address").
+MiniClick.create_command("probe", "Like scan, but only at one memory address").
     set_category("exploit").
-    add_argument("address", "Memory address (optional after scan)", false, true).
-    add_option("all", "Include payloads marked with requirements", false, null, true).
-    add_option("no_discover", "Skip auto-testing unknown payloads", false, null, true).
-    add_option("pick", "Select exploit by number without prompting", null).
-    add_option("opt", "Optional overflow argument for selected exploit", "").
+    add_argument("address", "Memory address e.g. 0x401000 (defaults to first from scan)", false, true).
+    add_option("all", "Also test payloads that need an extra argument", false, null, true).
+    add_option("no_discover", "List payloads only; do not auto-test unknown ones", false, null, true).
+    add_option("pick", "Run exploit N immediately without the interactive menu", null).
+    add_option("opt", "Pass overflow argument when using --pick", "").
     set_function(ExploitCommands["probe_cmd"]).
     build()
 
-MiniClick.create_command("overflow", "Run overflow exploit on active library").
+MiniClick.create_command("overflow", "Run a single overflow when you know address and payload").
     set_category("exploit").
-    add_argument("address", "Memory address").
-    add_argument("payload", "Vulnerability / function name").
-    add_option("opt", "Optional overflow argument (LAN IP, password, etc.)", "").
+    add_argument("address", "Memory address from scan output").
+    add_argument("payload", "Function name from scan output e.g. strcpy").
+    add_option("opt", "Extra argument for * payloads: LAN IP, password, file path", "").
     set_function(ExploitCommands["overflow_cmd"]).
     build()
 
-MiniClick.create_command("auto", "Auto-exploit active library (zero-req payloads first)").
+MiniClick.create_command("auto", "Try saved and simple exploits until one gives shell/computer/file").
     set_category("exploit").
-    add_option("all", "Also try payloads marked with requirements", false, null, true).
+    add_option("all", "Also brute-force payloads that need an extra argument", false, null, true).
     set_function(ExploitCommands["auto_cmd"]).
     build()
 
-MiniClick.create_command("exploits", "List cached exploits for the active library").
+MiniClick.create_command("hack", "One-shot: map target, connect to port, and auto-exploit").
+    set_category("exploit").
+    add_argument("ip", "Target public IP or domain").
+    add_argument("port", "Open port number from map / port forward").
+    add_argument("bounce", "LAN IP for bounce exploits that need an overflow argument", false, true).
+    set_function(ExploitCommands["hack_cmd"]).
+    build()
+
+MiniClick.create_command("exploits", "List saved exploits for the active library (from past scans)").
     set_category("exploit").
     set_function(ExploitCommands["exploits_cmd"]).
+    build()
+
+MiniClick.create_command("target", "Connect to ip:port and auto-exploit (no map step)").
+    set_category("exploit").
+    add_argument("ip", "Target IP or domain").
+    add_argument("port", "Port number").
+    add_option("opt", "Bounce LAN IP or overflow argument for * payloads", "").
+    add_option("shotgun", "Brute-force all payloads if auto fails", false, null, true).
+    set_function(ExploitCommands["target_cmd"]).
+    build()
+
+MiniClick.create_command("local", "Load a local .so and auto-exploit").
+    set_category("exploit").
+    add_argument("path", "Library path e.g. /lib/init.so").
+    add_option("opt", "Overflow argument for * payloads", "").
+    add_option("shotgun", "Brute-force all payloads if auto fails", false, null, true).
+    set_function(ExploitCommands["local_cmd"]).
+    build()
+
+MiniClick.create_command("shotgun", "Brute-force every payload on the active library").
+    set_category("exploit").
+    add_option("opt", "Overflow argument for * payloads", "").
+    set_function(ExploitCommands["shotgun_cmd"]).
     build()
 
 MiniClick.create_command("put", "Upload a file to the focused shell").
     set_category("files").
     add_argument("source", "Source file path").
     add_argument("destination", "Destination path").
+    add_option("from_relative", "Source from relative shell instead of home", false, "r", true).
     set_function(FileCommands["put"]).
     build()
 
@@ -2481,6 +3578,7 @@ MiniClick.create_command("get", "Download a file from the focused shell").
     set_category("files").
     add_argument("source", "Source file path on remote").
     add_argument("destination", "Local destination path").
+    add_option("to_relative", "Save to relative shell instead of home", false, "r", true).
     set_function(FileCommands["get"]).
     build()
 
@@ -2507,7 +3605,187 @@ MiniClick.create_command("file", "Open FileExplorer on the focused shell").
     set_function(FileCommands["file_cmd"]).
     build()
 
+MiniClick.create_command("cd", "Change working directory on the focused computer").
+    set_category("files").
+    add_argument("path", "Directory path (- for previous)", false, true).
+    set_function(FileCommands["cd"]).
+    build()
+
+MiniClick.create_command("write", "Write content to a file").
+    set_category("files").
+    add_argument("filename", "File path").
+    add_argument("content", "Content to write", true).
+    set_function(FileCommands["write_file"]).
+    build()
+
+MiniClick.create_command("rm", "Delete a file in the current directory").
+    set_category("files").
+    add_argument("filename", "File name").
+    set_function(FileCommands["rm"]).
+    build()
+
+MiniClick.create_command("rmdir", "Delete a folder in the current directory").
+    set_category("files").
+    add_argument("dirname", "Folder name").
+    set_function(FileCommands["rmdir"]).
+    build()
+
+MiniClick.create_command("chmod", "Change file permissions (octal e.g. 755)").
+    set_category("files").
+    add_argument("filename", "File name").
+    add_argument("permissions", "Octal permissions").
+    add_option("recursive", "Apply recursively", false, "r", true).
+    set_function(FileCommands["chmod"]).
+    build()
+
+MiniClick.create_command("chgrp", "Change file group").
+    set_category("files").
+    add_argument("filename", "File name").
+    add_argument("group", "New group").
+    add_option("recursive", "Apply recursively", false, "r", true).
+    set_function(FileCommands["chgrp"]).
+    build()
+
+MiniClick.create_command("chown", "Change file owner").
+    set_category("files").
+    add_argument("filename", "File name").
+    add_argument("owner", "New owner").
+    add_option("recursive", "Apply recursively", false, "r", true).
+    set_function(FileCommands["chown"]).
+    build()
+
+MiniClick.create_command("cp", "Copy a file").
+    set_category("files").
+    add_argument("filename", "Source file name").
+    add_argument("destination", "Destination folder").
+    add_argument("newname", "New file name").
+    set_function(FileCommands["cp"]).
+    build()
+
+MiniClick.create_command("mv", "Move a file").
+    set_category("files").
+    add_argument("filename", "Source file name").
+    add_argument("destination", "Destination folder").
+    add_argument("newname", "New file name").
+    set_function(FileCommands["mv"]).
+    build()
+
+MiniClick.create_command("rename", "Rename a file").
+    set_category("files").
+    add_argument("filename", "Current file name").
+    add_argument("newname", "New file name").
+    set_function(FileCommands["rename"]).
+    build()
+
+MiniClick.create_command("ps", "View running processes on the focused computer").
+    set_category("shell").
+    set_function(ComputerCommands["view_procs"]).
+    build()
+
+MiniClick.create_command("kill", "Kill a process by PID").
+    set_category("shell").
+    add_argument("pid", "Process ID").
+    set_function(ComputerCommands["kill_proc"]).
+    build()
+
+MiniClick.create_command("adduser", "Create a user on the focused computer").
+    set_category("shell").
+    add_argument("username", "Username").
+    add_argument("password", "Password").
+    set_function(ComputerCommands["add_user"]).
+    build()
+
+MiniClick.create_command("deluser", "Delete a user").
+    set_category("shell").
+    add_argument("username", "Username").
+    add_option("remove_home", "Also remove home directory", false, "r", true).
+    set_function(ComputerCommands["remove_user"]).
+    build()
+
+MiniClick.create_command("addgroup", "Add a user to a group").
+    set_category("shell").
+    add_argument("username", "Username").
+    add_argument("groupname", "Group name").
+    set_function(ComputerCommands["add_group"]).
+    build()
+
+MiniClick.create_command("delgroup", "Remove a user from a group").
+    set_category("shell").
+    add_argument("username", "Username").
+    add_argument("groupname", "Group name").
+    set_function(ComputerCommands["remove_group"]).
+    build()
+
+MiniClick.create_command("touch", "Create an empty file").
+    set_category("shell").
+    add_argument("path", "Directory path").
+    add_argument("filename", "File name").
+    set_function(ComputerCommands["create_file"]).
+    build()
+
+MiniClick.create_command("logwipe", "Wipe the system log on the focused computer").
+    set_category("shell").
+    set_function(ComputerCommands["wipe_log"]).
+    build()
+
+MiniClick.create_command("mkdir", "Create a folder").
+    set_category("shell").
+    add_argument("path", "Parent directory").
+    add_argument("foldername", "New folder name").
+    set_function(ComputerCommands["create_folder"]).
+    build()
+
+MiniClick.create_command("shell", "Drop to the native shell on the focused host").
+    set_category("shell").
+    set_function(ShellCommands["drop_shell"]).
+    build()
+
+MiniClick.create_command("build", "Compile a .src file on the focused shell").
+    set_category("shell").
+    add_argument("source_path", "Source .src path").
+    add_argument("destination_path", "Output directory").
+    add_option("can_import", "Allow imports in the build", false, "i", true).
+    set_function(ShellCommands["build_file"]).
+    build()
+
+MiniClick.create_command("launch", "Run a program on the focused shell").
+    set_category("shell").
+    add_argument("program", "Program path").
+    add_argument("params", "Arguments", true).
+    set_function(ShellCommands["run_command"]).
+    build()
+
+MiniClick.create_command("login", "Connect to SSH or FTP and focus the new shell").
+    set_category("shell").
+    add_argument("service", "ssh or ftp").
+    add_argument("ip", "Target IP").
+    add_argument("port", "Port number").
+    add_argument("user", "Username").
+    add_argument("password", "Password").
+    set_function(ShellCommands["connect_service"]).
+    build()
+
+MiniClick.create_command("ping", "Ping an IP from the focused shell").
+    set_category("shell").
+    add_argument("ip", "Target IP").
+    set_function(ShellCommands["try_ping"]).
+    build()
+
+MiniClick.create_command("sudo", "Switch to another user on the focused shell").
+    set_category("shell").
+    add_argument("user", "Username").
+    add_argument("password", "Password").
+    set_function(ShellCommands["try_sudo"]).
+    build()
+
+MiniClick.create_command("pivot", "Copy and launch magpie on the focused shell").
+    set_category("shell").
+    set_function(ShellCommands["pivot_host"]).
+    build()
+
 MiniClick.aliases["nmap"] = "map"
+MiniClick.aliases["portenum"] = "enum"
+MiniClick.aliases["smtpdump"] = "smtp"
 MiniClick.aliases["exploit"] = "overflow"
 MiniClick.aliases["explorer"] = "file"
 
@@ -2530,17 +3808,32 @@ Magpie.print_result = function(result)
     end if
 end function
 
+Magpie.save_exploits = function()
+    if not StateManager.cob.hasIndex("exploit_store") then return
+    for lib in StateManager.cob["exploit_store"].indexes
+        for version in StateManager.cob["exploit_store"][lib].indexes
+            if not ExploitManager.has_disk_exploits(lib, version) then
+                ExploitManager.store_exploits(lib, version)
+            end if
+        end for
+    end for
+end function
+
 Magpie.run_repl = function()
     print("Magpie multitool loaded.".cbold("cyan"))
-    print("Type ".color("dim") + "help".cbold("white") + " for commands, ".color("dim") + "exit".cbold("white") + " to quit.".color("dim"))
-    print(("Workflow: ").color("dim") + "map".color("cyan") + " -> ".color("dim") + "connect".color("orange") + " -> ".color("dim") + "scan".color("green") + (" (pick shell/computer/file)").color("dim"))
+    print("Type ".color("dim") + "help".cbold("white") + " for the full guide, ".color("dim") + "help connect".cbold("cyan") + " for exploit steps, ".color("dim") + "exit".cbold("white") + " to quit.".color("dim"))
+    print(("Quick hack: ").color("dim") + "hack <public_ip> <port>".cbold("gold") + ("  or  ").color("dim") + "target".cbold("white") + (" when you know the port  or  ").color("dim") + "map".cbold("cyan") + " -> ".color("dim") + "connect".cbold("orange") + " -> ".color("dim") + "scan".cbold("green"))
+    print(("Need tools? ").color("dim") + "hackshop".cbold("cyan") + (" finds the apt repo  |  ").color("dim") + "hackshop --add".cbold("cyan") + (" registers it").color("dim"))
 
     while true
         input = user_input(Magpie.build_prompt())
         if input == null then continue
         input = input.trim
         if input == "" then continue
-        if input == "exit" or input == "quit" then break
+        if input == "exit" or input == "quit" then
+            Magpie.save_exploits()
+            break
+        end if
 
         args = input.split(" ")
         result = MiniClick.run(args)
