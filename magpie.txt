@@ -141,10 +141,35 @@ string.regex_escape = function
     return result
 end function
 
-//Simple string color lib functionality for greyscript
-// By MachaCeleste 20240305
+Colors = {}
+Colors.end_tag = "</color></b>"
+Colors.red = "#FF0000FF"
+Colors.green = "#00FF00FF"
+Colors.cyan = "#00FFFFFF"
+Colors.orange = "#FF8400FF"
+Colors.gold = "#CCCC00FF"
+Colors.grey = "#71858DFF"
+Colors.blue = "#4DA6FFFF"
+Colors.magenta = "#FF00FFFF"
+Colors.white = "#FFFFFFFF"
+Colors.dim = "#888888FF"
+
+Colors.wrap = function(hex, text, bold)
+    prefix = "<color=" + hex + ">"
+    if bold then prefix = prefix + "<b>"
+    suffix = ""
+    if bold then suffix = "</b>"
+    return prefix + text + suffix + "</color>"
+end function
+
 string.color = function(hexc)
-    return "<color=" + hexc + ">" + self + "</color>"
+    if Colors.hasIndex(hexc) then hexc = Colors[hexc]
+    return Colors.wrap(hexc, self, false)
+end function
+
+string.cbold = function(hexc)
+    if Colors.hasIndex(hexc) then hexc = Colors[hexc]
+    return Colors.wrap(hexc, self, true)
 end function
 
 // Miniclick by Merlin Newcomb 2026
@@ -181,11 +206,12 @@ CommandBuilder = function(name, description)
         return self // Enable method chaining
     end function
 
-    obj.add_argument = function(name, description, is_rest = false)
+    obj.add_argument = function(name, description, is_rest = false, is_optional = false)
         self.arguments.push({
             "name": name,
             "description": description,
             "is_rest": is_rest,
+            "is_optional": is_optional,
         })
         return self
     end function
@@ -283,9 +309,15 @@ MiniClick.parse_args = function(command, args)
         end if
     end for
 
-    if arg_index < command.arguments.len then
-        return Error.init("Not enough arguments")
-    end if
+    while arg_index < command.arguments.len
+        arg_def = command.arguments[arg_index]
+        if arg_def.hasIndex("is_optional") and arg_def.is_optional then
+            parsed[arg_def.name] = null
+            arg_index = arg_index + 1
+        else
+            return Error.init("Not enough arguments")
+        end if
+    end while
 
     return parsed
 end function
@@ -419,6 +451,234 @@ get_hackshop = function()
     return null
 end function
 
+WifiManager = {}
+WifiManager.CACHE_PATH = "/etc/wifi_cache.txt"
+WifiManager.MAX_ACKS = 10000
+
+WifiManager.tag = function(symbol, color_name)
+    return ("[" + symbol + "]").cbold(color_name)
+end function
+
+WifiManager.get_net_devices = function(computer)
+    devices = []
+    for line in computer.network_devices.split(char(10))
+        line = line.trim
+        if line.len == 0 then continue
+        parts = line.split(" ")
+        cleaned = []
+        for p in parts
+            if p.len > 0 then cleaned.push(p)
+        end for
+        if cleaned.len < 3 then continue
+        entry = {}
+        entry.interface = cleaned[0]
+        entry.chipset = cleaned[1]
+        entry.monitor_mode = (cleaned[2] == "True")
+        devices.push(entry)
+    end for
+    return devices
+end function
+
+WifiManager.get_wlan = function(computer)
+    for d in WifiManager.get_net_devices(computer)
+        if d.interface.indexOf("wlan") == 0 then return d
+    end for
+    return null
+end function
+
+WifiManager.write_cache = function(computer, bssid, essid, password)
+    existing = ""
+    f = computer.File(WifiManager.CACHE_PATH)
+    if f then existing = f.get_content
+    lines = existing.split(char(10))
+    kept = []
+    for line in lines
+        line = line.trim
+        if line.len == 0 then continue
+        if line.split("|")[0] == bssid then continue
+        kept.push(line)
+    end for
+    kept.push(bssid + "|" + essid + "|" + password)
+    computer.touch("/etc", "wifi_cache.txt")
+    cf = computer.File(WifiManager.CACHE_PATH)
+    if cf then cf.set_content(kept.join(char(10)))
+end function
+
+WifiManager.read_cache = function(computer, bssid)
+    f = computer.File(WifiManager.CACHE_PATH)
+    if not f then return null
+    for line in f.get_content.split(char(10))
+        line = line.trim
+        if line.len == 0 then continue
+        parts = line.split("|")
+        if parts.len >= 3 and parts[0] == bssid then return parts[2]
+    end for
+    return null
+end function
+
+WifiManager.parse_net = function(net_str)
+    parts = net_str.split(" ")
+    clean = []
+    for p in parts
+        if p.len > 0 then clean.push(p)
+    end for
+    if clean.len < 3 then return null
+    result = {}
+    result.bssid = clean[0]
+    result.signal = clean[1].to_int
+    result.essid = clean[2]
+    return result
+end function
+
+WifiManager.sort_networks = function(nets)
+    arr = nets[:]
+    n = arr.len
+    i = 0
+    while i < n - 1
+        j = 0
+        while j < n - i - 1
+            na = WifiManager.parse_net(arr[j])
+            nb = WifiManager.parse_net(arr[j + 1])
+            sig_a = 0
+            sig_b = 0
+            if na != null then sig_a = na.signal
+            if nb != null then sig_b = nb.signal
+            if sig_a < sig_b then
+                tmp = arr[j]
+                arr[j] = arr[j + 1]
+                arr[j + 1] = tmp
+            end if
+            j = j + 1
+        end while
+        i = i + 1
+    end while
+    return arr
+end function
+
+WifiManager.try_network = function(computer, crypto, iface, net_str)
+    net = WifiManager.parse_net(net_str)
+    if net == null then return false
+
+    bssid = net.bssid
+    essid = net.essid
+    print(WifiManager.tag("*", "cyan") + " Target: " + essid.cbold("white") + " (" + bssid.color("dim") + ") signal: " + str(net.signal).color("gold"))
+
+    cached = WifiManager.read_cache(computer, bssid)
+    if cached != null then
+        print(WifiManager.tag("*", "cyan") + " Cache hit, trying stored password...")
+        if computer.connect_wifi(iface, bssid, essid, cached) then
+            print(WifiManager.tag("+", "green") + " Connected via cache: " + essid.cbold("green"))
+            return true
+        end if
+        print(WifiManager.tag("*", "cyan") + " Cached password stale, re-cracking...")
+    end if
+
+    cap_file = home_dir + "/file.cap"
+    print(WifiManager.tag("*", "cyan") + " Capturing packets (auto-stops at " + str(WifiManager.MAX_ACKS) + " ACKs)...")
+    ap_err = crypto.aireplay(bssid, essid, WifiManager.MAX_ACKS)
+    if typeof(ap_err) == "string" then
+        print(WifiManager.tag("-", "red") + " aireplay error: " + ap_err.color("red"))
+        return false
+    end if
+
+    cf = computer.File(cap_file)
+    if not cf then
+        print(WifiManager.tag("-", "red") + " file.cap not found after aireplay.")
+        return false
+    end if
+
+    print(WifiManager.tag("*", "cyan") + " Cracking " + cap_file.color("gold") + "...")
+    password = crypto.aircrack(cap_file)
+    if not password then
+        print(WifiManager.tag("-", "red") + " aircrack failed for " + essid)
+        return false
+    end if
+    print(WifiManager.tag("+", "green") + " Password: " + password.cbold("green"))
+
+    WifiManager.write_cache(computer, bssid, essid, password)
+
+    print(WifiManager.tag("*", "cyan") + " Connecting to " + essid.cbold("white") + "...")
+    if computer.connect_wifi(iface, bssid, essid, password) then
+        print(WifiManager.tag("+", "green") + " Connected to " + essid.cbold("green") + "!")
+        return true
+    end if
+
+    print(WifiManager.tag("-", "red") + " connect_wifi rejected for " + essid)
+    return false
+end function
+
+WifiManager.ensure_wifi = function()
+    computer = get_shell.host_computer
+    if computer.is_network_active then return true
+
+    print(WifiManager.tag("*", "orange") + " No network connection detected.".cbold("orange"))
+    print(WifiManager.tag("*", "cyan") + " Starting auto WiFi connect...")
+
+    crypto = include_lib("/lib/crypto.so")
+    if crypto == null then
+        print(WifiManager.tag("-", "red") + " Could not load /lib/crypto.so".cbold("red"))
+        return false
+    end if
+
+    wlan = WifiManager.get_wlan(computer)
+    if wlan == null then
+        print(WifiManager.tag("-", "red") + " No wlan interface found.")
+        return false
+    end if
+
+    iface = wlan.interface
+    print(WifiManager.tag("*", "cyan") + " Interface: " + iface.cbold("cyan"))
+
+    if not wlan.monitor_mode then
+        print(WifiManager.tag("*", "cyan") + " Starting monitor mode...")
+        mon = crypto.airmon("start", iface)
+        if typeof(mon) == "string" and mon.lower.indexOf("error") >= 0 then
+            print(WifiManager.tag("-", "red") + " airmon failed: " + mon)
+            return false
+        end if
+        print(WifiManager.tag("+", "green") + " Monitor mode on.")
+    end if
+
+    print(WifiManager.tag("*", "cyan") + " Scanning for networks...")
+    raw = computer.wifi_networks(iface)
+
+    if raw == null or raw.len == 0 then
+        crypto.airmon("stop", iface)
+        print(WifiManager.tag("-", "red") + " No WiFi networks found.")
+        return false
+    end if
+
+    sorted = WifiManager.sort_networks(raw)
+    print(WifiManager.tag("+", "green") + " Found " + str(sorted.len) + " network(s):")
+    for net in sorted
+        n = WifiManager.parse_net(net)
+        if n != null then
+            print("    [" + str(n.signal).color("gold") + "] " + n.essid.cbold("white") + " - " + n.bssid.color("dim"))
+        end if
+    end for
+
+    max_attempts = sorted.len
+    if max_attempts > 2 then max_attempts = 2
+
+    i = 0
+    connected = false
+    while i < max_attempts and not connected
+        if i == 1 then print(WifiManager.tag("*", "orange") + " Primary failed, trying secondary target...")
+        connected = WifiManager.try_network(computer, crypto, iface, sorted[i])
+        i = i + 1
+    end while
+
+    crypto.airmon("stop", iface)
+
+    if connected then
+        print(WifiManager.tag("+", "green") + " WiFi connected. You are on the target LAN.".cbold("green"))
+        return true
+    end if
+
+    print(WifiManager.tag("-", "red") + " Could not connect. Cached passwords at: " + WifiManager.CACHE_PATH.color("gold"))
+    return false
+end function
+
 StateManager = {}
 StateManager.classID = "StateManager"
 
@@ -434,15 +694,17 @@ StateManager.init = function()
     self.cob.layer = self.cob.layer + 1
     self["relative_object"] = self.cob["focused_object"]
 
-    MiniClick.run(("put " + self.cob["home_path"] + "/librshell.so " + self.get_relative_file().path).trim.split(" "))
-    MiniClick.run(("put " + self.cob["home_path"] + "/metaxploit.so " + self.get_relative_file().path).trim.split(" "))
+    MiniClick.run("put /lib/librshell.so /lib".split(" "))
+    MiniClick.run("put /lib/metaxploit.so /lib".split(" "))
 
-    self.cob["remote_metax"] = include_lib(self["relative_object"]["file"].path + "/metaxploit.so")
+    self.cob["remote_metax"] = include_lib("/lib/metaxploit.so")
 end function
 
 StateManager.first_layer = function()
-    self.cob["aptclient"] = include_lib("/libs/aptclient.so")
-    if self.cob["aptclient"] == null then exit("aptclient.so not found in /libs directory!")
+    WifiManager.ensure_wifi()
+
+    self.cob["aptclient"] = include_lib("/lib/aptclient.so")
+    if self.cob["aptclient"] == null then exit("aptclient.so not found in /lib directory!")
 
     while true
         self.cob["aptclient"].update()
@@ -462,22 +724,22 @@ StateManager.first_layer = function()
         self.cob["aptclient"].add_repo(hack_shop)
     end while
 
-    if self.cob["aptclient"].check_upgrade("/libs/librshell.so") then
-        self.cob["aptclient"].install("librshell.so", "/libs")
+    if self.cob["aptclient"].check_upgrade("/lib/librshell.so") then
+        self.cob["aptclient"].install("librshell.so", "/lib")
     end if
 
-    if self.cob["aptclient"].check_upgrade("/libs/metaxploit.so") then
-        self.cob["aptclient"].install("metaxploit.so", "/libs")
+    if self.cob["aptclient"].check_upgrade("/lib/metaxploit.so") then
+        self.cob["aptclient"].install("metaxploit.so", "/lib")
     end if
 
-    if self.cob["aptclient"].check_upgrade("/libs/crypto.so") then
-        self.cob["aptclient"].install("crypto.so", "/libs")
+    if self.cob["aptclient"].check_upgrade("/lib/crypto.so") then
+        self.cob["aptclient"].install("crypto.so", "/lib")
     end if
 
-    self.cob["home_metax"] = include_lib("/libs/metaxploit.so")
-    self.cob["remote_metax"] = include_lib("/libs/metaxploit.so")
+    self.cob["home_metax"] = include_lib("/lib/metaxploit.so")
+    self.cob["remote_metax"] = include_lib("/lib/metaxploit.so")
 
-    self.cob["home_crypto"] = include_lib("/libs/crypto.so")
+    self.cob["home_crypto"] = include_lib("/lib/crypto.so")
 
     self.cob["exploit_store"] = {}  // Structure: {"libname": {"version": {"address": {"string": ["root/user/guest", "shell/computer/file"], "string": ["root/user/guest", "shell/computer/file"]}}}}
 
@@ -567,7 +829,7 @@ StateManager.load_plugins = function()
 
             if cmd.hasIndex("arguments") then
                 for arg in cmd.arguments
-                    builder.add_argument(arg.name, arg.description, arg.hasIndex("is_rest") and arg.is_rest)
+                    builder.add_argument(arg.name, arg.description, arg.hasIndex("is_rest") and arg.is_rest, arg.hasIndex("is_optional") and arg.is_optional)
                 end for
             end if
 
@@ -704,25 +966,28 @@ StateCommands.classID = "StateCommands"
 
 StateCommands.list_objects = function(args)
     result = ""
-    for obj in StateManager.cob["stored_objects"] // Print UID, type, and IP addresses
+    for obj in StateManager.cob["stored_objects"]
         key = obj["uid"]
-        result = result + key + ":"
+        line = key.color("cyan") + ":"
 
-        if StateManager.cob["focused_object"]["uid"] == obj["uid"] then result = result + " (focused)"
-        if StateManager["relative_object"]["uid"] == obj["uid"] then result = result + " (relative)"
-        if StateManager.cob["home_object"]["uid"] == obj["uid"] then result = result + " (home)"
+        tags = []
+        if StateManager.cob["focused_object"]["uid"] == obj["uid"] then tags.push("focused".cbold("green"))
+        if StateManager["relative_object"]["uid"] == obj["uid"] then tags.push("relative".cbold("orange"))
+        if StateManager.cob["home_object"]["uid"] == obj["uid"] then tags.push("home".cbold("gold"))
+        if tags.len > 0 then line = line + " (" + tags.join(", ") + ")"
 
-        result = result + " " + obj["info"]["user"]
+        line = line + " " + obj["info"]["user"].cbold("white")
 
         if obj["shell"] != null then
-            result = result + " shell "
+            line = line + " " + "shell".color("blue")
         else if obj["computer"] != null then
-            result = result + " computer "
-        else 
-            result = result + " file "
+            line = line + " " + "computer".color("magenta")
+        else
+            line = line + " " + "file".color("dim")
         end if
 
-        result = result + obj.info["local_ip"] + "@" + obj.info["pub_ip"] + char(10)
+        line = line + " " + obj.info["local_ip"].color("gold") + "@" + obj.info["pub_ip"].color("green")
+        result = result + line + char(10)
     end for
     return result
 end function
@@ -991,9 +1256,537 @@ ExploitManager.get_exploits = function(libname, libversion)
     return StateManager.cob["exploit_store"][libname][libversion]
 end function
 
-// Returns whether the library directory exists, and creates it if it doesn't
 ExploitManager.check_libpath = function(libname, libversion)
     c = StateManager.get_home_computer()
     if typeof(c) == "Error" then return c
 
     home_path = StateManager.cob["home_path"]
+    base = home_path + "/exploits"
+    if not c.File(base) then c.create_folder(home_path, "exploits")
+    lib_dir = base + "/" + libname
+    if not c.File(lib_dir) then c.create_folder(base, libname)
+    ver_dir = lib_dir + "/" + libversion
+    if not c.File(ver_dir) then c.create_folder(lib_dir, libversion)
+    return ver_dir
+end function
+
+NetworkMapper = {}
+
+NetworkMapper.parse_whois = function(raw)
+    info = {}
+    for line in raw.split(char(10))
+        if line.indexOf(":") == null then continue
+        parts = line.split(":")
+        key = parts[0].trim.lower
+        val = parts[1]
+        idx = 2
+        while idx < parts.len
+            val = val + ":" + parts[idx]
+            idx = idx + 1
+        end while
+        info[key] = val.trim
+    end for
+    return info
+end function
+
+NetworkMapper.get_device_type = function(ip)
+    if get_switch(ip) then return "switch"
+    if get_router(ip) then return "router"
+    return "device"
+end function
+
+NetworkMapper.collect_devices = function(router, device_list)
+    if router == null then return
+
+    lan_ip = router.local_ip
+    if device_list.indexOf(lan_ip) == null then device_list.push(lan_ip)
+
+    for device in router.devices_lan_ip
+        if device == lan_ip then continue
+        if device_list.indexOf(device) != null then continue
+
+        dtype = NetworkMapper.get_device_type(device)
+        device_list.push(device)
+
+        if dtype == "router" then
+            NetworkMapper.collect_devices(get_router(device), device_list)
+        else if dtype == "switch" then
+            NetworkMapper.collect_devices(get_switch(device), device_list)
+        end if
+    end for
+end function
+
+NetworkMapper.build_port_entry = function(router, port, scan_ip)
+    entry = {}
+    entry.number = port.port_number
+    entry.address = port.get_lan_ip
+    entry.service = router.port_info(port)
+
+    if port.is_closed then
+        entry.status = "closed"
+        entry.sort_key = 1
+    else if is_lan_ip(scan_ip) then
+        entry.status = "open"
+        entry.sort_key = 100
+    else
+        entry.status = "internal"
+        entry.sort_key = 10
+    end if
+
+    for fwd in router.used_ports
+        if fwd.port_number == port.port_number and fwd.get_lan_ip == entry.address and not fwd.is_closed then
+            entry.status = "open"
+            entry.sort_key = 100
+        end if
+    end for
+
+    return entry
+end function
+
+NetworkMapper.scan = function(target)
+    resolved = target
+    domain_label = null
+
+    if not is_valid_ip(target) then
+        lookup = nslookup(target)
+        if lookup == "Not found" then return Error.init("Invalid IP address or domain: " + target)
+        domain_label = target
+        resolved = lookup
+    end if
+
+    router = get_router(resolved)
+    if router == null then
+        if is_lan_ip(resolved) then
+            router = get_router
+        else
+            return Error.init("No router found for: " + resolved)
+        end if
+    end if
+
+    device_list = []
+    NetworkMapper.collect_devices(router, device_list)
+
+    for port in router.used_ports
+        if device_list.indexOf(port.get_lan_ip) == null then device_list.push(port.get_lan_ip)
+    end for
+
+    whois_raw = whois(router.public_ip)
+    whois_info = NetworkMapper.parse_whois(whois_raw)
+
+    devices = {}
+    for device in device_list
+        device_info = {}
+        device_info.address = device
+        device_info.ports = []
+        device_info.sort_key = 0
+        device_info.is_router = 0
+
+        device_ports = router.device_ports(device)
+        if typeof(device_ports) == "string" or device_ports == null then device_ports = []
+
+        for port in router.used_ports
+            if port.get_lan_ip == device then
+                add_port = true
+                for existing in device_ports
+                    if existing.port_number == port.port_number and existing.get_lan_ip == device then add_port = false
+                end for
+                if add_port then device_ports.push(port)
+            end if
+        end for
+
+        if typeof(device_ports) == "list" then
+            for port in device_ports
+                port_entry = NetworkMapper.build_port_entry(router, port, resolved)
+                device_info.ports.push(port_entry)
+                device_info.sort_key = device_info.sort_key + port_entry.sort_key
+                if port.port_number == 8080 then device_info.is_router = 1
+            end for
+        end if
+
+        if device == router.local_ip then
+            device_info.ports.push({
+                "number": 0,
+                "address": device,
+                "service": "kernel " + router.kernel_version,
+                "status": "open",
+                "sort_key": 1000,
+            })
+            device_info.sort_key = device_info.sort_key + 1000
+        end if
+
+        devices[device] = device_info
+    end for
+
+    result = {}
+    result.target = resolved
+    result.domain = domain_label
+    result.whois_raw = whois_raw
+    result.whois = whois_info
+    result.router = router
+    result.firewall = router.firewall_rules
+    result.devices = devices
+    return result
+end function
+
+NetworkMapper.format_heading = function(title)
+    rule = ""
+    i = 0
+    while i < title.len
+        rule = rule + "-"
+        i = i + 1
+    end while
+    return char(10) + title.cbold("cyan") + char(10) + rule.color("dim") + char(10)
+end function
+
+NetworkMapper.format_port_line = function(port_entry)
+    status = port_entry.status
+    line = "  " + str(port_entry.number) + "  [" + status + "]  " + port_entry.service
+
+    if status == "open" then return line.cbold("green")
+    if status == "internal" then return line.color("orange")
+    return line.color("grey")
+end function
+
+NetworkMapper.format = function(data)
+    if data == null then return Error.init("No map data to display.")
+
+    out = char(10) + ("MAP: " + data.target).cbold("gold") + char(10)
+
+    out = out + NetworkMapper.format_heading("WHOIS")
+    if data.domain != null then out = out + "  Domain:  " + data.domain.cbold("white") + char(10)
+    out = out + "  IP:      " + data.router.public_ip.cbold("green") + char(10)
+
+    if data.whois.hasIndex("domain name") then
+        out = out + "  Domain:  " + data.whois["domain name"].color("white") + char(10)
+    end if
+    if data.whois.hasIndex("administrative contact") then
+        out = out + "  Admin:   " + data.whois["administrative contact"].color("white") + char(10)
+    end if
+    if data.whois.hasIndex("email address") then
+        out = out + "  Email:   " + data.whois["email address"].color("blue") + char(10)
+    end if
+    if data.whois.hasIndex("phone") then
+        out = out + "  Phone:   " + data.whois["phone"].color("dim") + char(10)
+    end if
+
+    out = out + NetworkMapper.format_heading("ROUTER")
+    out = out + "  Public:  " + data.router.public_ip.color("green") + char(10)
+    out = out + "  LAN:     " + data.router.local_ip.cbold("gold") + char(10)
+    out = out + "  Kernel:  " + data.router.kernel_version.color("cyan") + char(10)
+    out = out + "  ESSID:   " + data.router.essid_name.color("white") + char(10)
+    out = out + "  BSSID:   " + data.router.bssid_name.color("dim") + char(10)
+
+    if data.firewall and data.firewall.len > 0 then
+        out = out + NetworkMapper.format_heading("FIREWALL")
+        for rule in data.firewall
+            out = out + "  " + rule.color("orange") + char(10)
+        end for
+    end if
+
+    out = out + NetworkMapper.format_heading("DEVICES")
+
+    sorted_devices = []
+    for item in data.devices
+        sorted_devices.push(item.value)
+    end for
+
+    n = sorted_devices.len
+    i = 0
+    while i < n - 1
+        j = 0
+        while j < n - i - 1
+            if sorted_devices[j].sort_key < sorted_devices[j + 1].sort_key then
+                tmp = sorted_devices[j]
+                sorted_devices[j] = sorted_devices[j + 1]
+                sorted_devices[j + 1] = tmp
+            end if
+            j = j + 1
+        end while
+        i = i + 1
+    end while
+
+    for device in sorted_devices
+        header = device.address
+        if device.address == data.router.local_ip then
+            out = out + char(10) + header.cbold("gold") + " " + "(router)".color("gold") + char(10)
+        else
+            out = out + char(10) + header.cbold("white") + char(10)
+        end if
+
+        if device.ports.len == 0 then
+            out = out + "  (no ports)".color("dim") + char(10)
+            continue
+        end if
+
+        port_sorted = device.ports[:]
+        pn = port_sorted.len
+        pi = 0
+        while pi < pn - 1
+            pj = 0
+            while pj < pn - pi - 1
+                if port_sorted[pj].number > port_sorted[pj + 1].number then
+                    ptmp = port_sorted[pj]
+                    port_sorted[pj] = port_sorted[pj + 1]
+                    port_sorted[pj + 1] = ptmp
+                end if
+                pj = pj + 1
+            end while
+            pi = pi + 1
+        end while
+
+        for port_entry in port_sorted
+            out = out + NetworkMapper.format_port_line(port_entry) + char(10)
+        end for
+    end for
+
+    return out
+end function
+
+FileManager = {}
+FileManager.classID = "FileManager"
+
+FileManager.get_perms = function(object)
+    t = typeof(object)
+    if t == "shell" or t == "ftpShell" then return active_user
+    if t == "computer" then return "unknown"
+    if t == "file" then return active_user
+    return Error.init("Unknown object type: " + t)
+end function
+
+FileManager.resolve_path = function(path)
+    if path[:1] == "/" then return path
+    if path[:2] == "~/" then return home_dir + path[1:]
+    if current_path == "/" then return current_path + path
+    return current_path + "/" + path
+end function
+
+FileManager.get_file = function(path)
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    resolved = FileManager.resolve_path(path)
+    f = c.File(resolved)
+    if f == null then return Error.init("File not found: " + resolved)
+    return f
+end function
+
+ExploitCommands = {}
+ExploitCommands.classID = "ExploitCommands"
+
+ExploitCommands.whois_cmd = function(args)
+    ip = args["target"]
+    info = ExploitManager.whois_lookup(ip)
+    if typeof(info) == "Error" then return info
+
+    lines = info.split(char(10))
+    result = char(10) + "WHOIS: ".cbold("cyan") + ip.cbold("gold") + char(10)
+    for line in lines
+        if line.indexOf(":") != null then
+            parts = line.split(":")
+            result = result + "  " + parts[0].trim.cbold("white") + ": " + parts[1].trim.color("green") + char(10)
+        else
+            result = result + "  " + line.color("dim") + char(10)
+        end if
+    end for
+    return result
+end function
+
+ExploitCommands.enum_cmd = function(args)
+    ip = args["target"]
+    raw = ExploitManager.full_enum(ip)
+    if typeof(raw) == "Error" then return raw
+    return raw.replace("open:true", "[open]".cbold("green")).replace("open:false", "[closed]".color("grey"))
+end function
+
+ExploitCommands.map_cmd = function(args)
+    if args["target"] == null then
+        if not StateManager.cob.hasIndex("last_map") or StateManager.cob["last_map"] == null then
+            return Error.init("No saved map. Usage: map <ip|domain>")
+        end if
+        return NetworkMapper.format(StateManager.cob["last_map"])
+    end if
+
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    if not c.is_network_active then
+        if not WifiManager.ensure_wifi() then return Error.init("No network connection.")
+    end if
+
+    data = NetworkMapper.scan(args["target"])
+    if typeof(data) == "Error" then return data
+
+    StateManager.cob["last_map"] = data
+    return NetworkMapper.format(data)
+end function
+
+ExploitCommands.smtp_cmd = function(args)
+    result = ExploitManager.smtp_enum(args["ip"], args["port"])
+    if typeof(result) == "Error" then return result
+    if typeof(result) == "list" then return result.join(char(10))
+    return str(result)
+end function
+
+FileCommands = {}
+FileCommands.classID = "FileCommands"
+
+FileCommands.put = function(args)
+    src = FileManager.resolve_path(args["source"])
+    dest = FileManager.resolve_path(args["destination"])
+
+    home_shell = StateManager.get_home_shell()
+    if typeof(home_shell) == "Error" then return home_shell
+
+    foc_shell = StateManager.get_focused_shell()
+    if typeof(foc_shell) == "Error" then return foc_shell
+
+    home_file = home_shell.host_computer.File(src)
+    if home_file == null then return Error.init("Source not found: " + src)
+
+    dest_folder = dest
+    if dest_folder[-1:] != "/" then
+        slash = dest_folder.lastIndexOf("/")
+        if slash != null then dest_folder = dest_folder[:slash]
+    end if
+
+    result = home_shell.scp(src, dest_folder, foc_shell, true)
+    if typeof(result) == "string" then return Error.init(result)
+    return ("Uploaded ").color("green") + src.color("gold") + (" -> ").color("green") + dest.color("gold")
+end function
+
+FileCommands.get = function(args)
+    src = FileManager.resolve_path(args["source"])
+    dest = FileManager.resolve_path(args["destination"])
+
+    home_shell = StateManager.get_home_shell()
+    if typeof(home_shell) == "Error" then return home_shell
+
+    foc_shell = StateManager.get_focused_shell()
+    if typeof(foc_shell) == "Error" then return foc_shell
+
+    result = foc_shell.scp(src, dest, home_shell, false)
+    if typeof(result) == "string" then return Error.init(result)
+    return ("Downloaded ").color("green") + src.color("gold") + (" -> ").color("green") + dest.color("gold")
+end function
+
+FileCommands.ls = function(args)
+    path = current_path
+    if args["path"] != null then path = FileManager.resolve_path(args["path"])
+
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+
+    folder = c.File(path)
+    if folder == null then return Error.init("Path not found: " + path)
+    if not folder.is_folder then return Error.init("Not a directory: " + path)
+
+    result = path.cbold("cyan") + char(10)
+    for f in folder.get_files
+        name = f.name
+        if f.is_folder then
+            result = result + name.color("blue") + "/" + char(10)
+        else if f.is_binary then
+            result = result + name.color("gold") + char(10)
+        else
+            result = result + name.color("white") + char(10)
+        end if
+    end for
+    return result
+end function
+
+FileCommands.cat = function(args)
+    f = FileManager.get_file(args["path"])
+    if typeof(f) == "Error" then return f
+    if f.is_folder then return Error.init("Cannot cat a directory.")
+    return f.get_content
+end function
+
+FileCommands.pwd = function(args)
+    return current_path.color("gold")
+end function
+
+MiniClick.create_command("whois", "Look up WHOIS info for an IP or domain").
+    add_argument("target", "IP address or domain name").
+    set_function(ExploitCommands["whois_cmd"]).
+    build()
+
+MiniClick.create_command("enum", "Enumerate router, ports, and LAN devices").
+    add_argument("target", "Target IP address").
+    set_function(ExploitCommands["enum_cmd"]).
+    build()
+
+MiniClick.create_command("map", "WHOIS + network map (whois + nmap) for an IP or domain").
+    add_argument("target", "IP address or domain (optional, shows last scan)", false, true).
+    set_function(ExploitCommands["map_cmd"]).
+    build()
+
+MiniClick.create_command("smtp", "SMTP user enumeration").
+    add_argument("ip", "Target IP address").
+    add_argument("port", "SMTP port number").
+    set_function(ExploitCommands["smtp_cmd"]).
+    build()
+
+MiniClick.create_command("put", "Upload a file to the focused shell").
+    add_argument("source", "Source file path").
+    add_argument("destination", "Destination path").
+    set_function(FileCommands["put"]).
+    build()
+
+MiniClick.create_command("get", "Download a file from the focused shell").
+    add_argument("source", "Source file path on remote").
+    add_argument("destination", "Local destination path").
+    set_function(FileCommands["get"]).
+    build()
+
+MiniClick.create_command("ls", "List directory contents").
+    add_argument("path", "Directory path", false, true).
+    set_function(FileCommands["ls"]).
+    build()
+
+MiniClick.create_command("cat", "Print file contents").
+    add_argument("path", "File path").
+    set_function(FileCommands["cat"]).
+    build()
+
+MiniClick.create_command("pwd", "Print current working directory").
+    set_function(FileCommands["pwd"]).
+    build()
+
+MiniClick.aliases["nmap"] = "map"
+
+Magpie = {}
+
+Magpie.build_prompt = function()
+    obj = StateManager.cob["focused_object"]
+    user = obj.info.user.cbold("cyan")
+    local_ip = obj.info.local_ip.color("gold")
+    path = current_path.color("green")
+    return user + "@" + local_ip + ":" + path + "> "
+end function
+
+Magpie.print_result = function(result)
+    if result == null then return
+    if typeof(result) == "Error" then
+        print(result.message.cbold("red"))
+    else
+        print(result)
+    end if
+end function
+
+Magpie.run_repl = function()
+    print("Magpie multitool loaded.".cbold("cyan"))
+    print("Type ".color("dim") + "help".cbold("white") + " for commands, ".color("dim") + "exit".cbold("white") + " to quit.".color("dim"))
+
+    while true
+        input = user_input(Magpie.build_prompt())
+        if input == null then continue
+        input = input.trim
+        if input == "" then continue
+        if input == "exit" or input == "quit" then break
+
+        args = input.split(" ")
+        result = MiniClick.run(args)
+        Magpie.print_result(result)
+    end while
+end function
+
+StateManager.init()
+Magpie.run_repl()
