@@ -182,11 +182,21 @@ MiniClick.commands = {}
 // Alias map: alias_name -> target_command_name
 MiniClick.aliases = {}
 
+MiniClick.category_order = ["recon", "exploit", "state", "files", "utility"]
+MiniClick.category_labels = {
+    "recon": "Recon",
+    "exploit": "Exploit",
+    "state": "State",
+    "files": "Files",
+    "utility": "Utility",
+}
+
 // CommandBuilder "Class"
 CommandBuilder = function(name, description)
     obj = {}
     obj.name = name
     obj.description = description
+    obj.category = "utility"
     obj.options = {}
     obj.short_aliases = {} // short_name -> long_name
     obj.arguments = []
@@ -216,6 +226,11 @@ CommandBuilder = function(name, description)
         return self
     end function
 
+    obj.set_category = function(category)
+        self.category = category
+        return self
+    end function
+
     obj.set_function = function(func)
         self.func = @func
         return self
@@ -228,6 +243,7 @@ CommandBuilder = function(name, description)
         MiniClick.commands[self.name] = {
             "name": self.name,
             "description": self.description,
+            "category": self.category,
             "options": self.options,
             "short_aliases": self.short_aliases,
             "arguments": self.arguments,
@@ -322,21 +338,48 @@ MiniClick.parse_args = function(command, args)
     return parsed
 end function
 
+MiniClick.format_help_rule = function(width)
+    rule = ""
+    i = 0
+    while i < width
+        rule = rule + "-"
+        i = i + 1
+    end while
+    return rule.color("dim")
+end function
+
+MiniClick.format_help_heading = function(title)
+    return char(10) + title.cbold("cyan") + char(10) + MiniClick.format_help_rule(title.len) + char(10)
+end function
+
 // Generating Help Text
 MiniClick.generate_help = function(command_name = null)
     if command_name == null then
-        help_text = "Available commands:\n"
-        for name in MiniClick.commands.indexes
-            command = MiniClick.commands[name]
-            help_text = help_text + name + ": " + command.description + "\n"
+        help_text = char(10) + "Magpie".cbold("gold") + " command reference" + char(10)
+
+        for cat in MiniClick.category_order
+            label = MiniClick.category_labels[cat]
+            section = ""
+            for name in MiniClick.commands.indexes
+                command = MiniClick.commands[name]
+                cmd_cat = command.hasIndex("category") and command.category or "utility"
+                if cmd_cat != cat then continue
+                line = "  " + name.cbold("white") + (" - ").color("dim") + command.description.color("grey") + char(10)
+                section = section + line
+            end for
+            if section.len > 0 then
+                help_text = help_text + MiniClick.format_help_heading(label) + section
+            end if
         end for
+
         if MiniClick.aliases.indexes.len > 0 then
-            help_text = help_text + "\nAliases:\n"
+            help_text = help_text + MiniClick.format_help_heading("Aliases")
             for alias in MiniClick.aliases.indexes
-                help_text = help_text + "  " + alias + " -> " + MiniClick.aliases[alias] + "\n"
+                help_text = help_text + "  " + alias.color("orange") + (" -> ").color("dim") + MiniClick.aliases[alias].cbold("white") + char(10)
             end for
         end if
-        help_text = help_text + "\nUse 'command --help' for more information on a specific command."
+
+        help_text = help_text + char(10) + ("Tip: ").color("dim") + "command --help".cbold("cyan") + (" for details.").color("dim")
     else
         if MiniClick.aliases.hasIndex(command_name) then
             command_name = MiniClick.aliases[command_name]
@@ -345,26 +388,39 @@ MiniClick.generate_help = function(command_name = null)
             return Error.init("Unknown command: " + command_name)
         end if
         command = MiniClick.commands[command_name]
-        help_text = command_name + ": " + command.description + "\n\nArguments:\n"
-        for arg in command.arguments
-            help_text = help_text + "  " + arg.name + ": " + arg.description + "\n"
-        end for
+        cmd_cat = command.hasIndex("category") and command.category or "utility"
+        cat_label = MiniClick.category_labels.hasIndex(cmd_cat) and MiniClick.category_labels[cmd_cat] or cmd_cat
 
-        help_text = help_text + "\nOptions:\n"
-        for option_name in command.options.indexes
-            option = command.options[option_name]
-            help_text = help_text + "  --" + option.name
-            if option.short_name != null then
-                help_text = help_text + " (-" + option.short_name + ")"
-            end if
-            help_text = help_text + ": " + option.description
-            if option.is_flag then
-                help_text = help_text + " (flag)"
-            else if option.default != null then
-                help_text = help_text + " (default: " + option.default + ")"
-            end if
-            help_text = help_text + "\n"
-        end for
+        help_text = char(10) + command_name.cbold("gold") + (" [" + cat_label + "]").color("dim") + char(10)
+        help_text = help_text + command.description.color("white") + char(10)
+
+        if command.arguments.len > 0 then
+            help_text = help_text + MiniClick.format_help_heading("Arguments")
+            for arg in command.arguments
+                req = arg.hasIndex("is_optional") and arg.is_optional and "optional".color("dim") or "required".color("orange")
+                rest = arg.hasIndex("is_rest") and arg.is_rest and " rest".color("cyan") or ""
+                help_text = help_text + "  " + arg.name.cbold("cyan") + rest + (" (" + req + ")").color("dim") + char(10)
+                help_text = help_text + "    " + arg.description.color("grey") + char(10)
+            end for
+        end if
+
+        if command.options.indexes.len > 0 then
+            help_text = help_text + MiniClick.format_help_heading("Options")
+            for option_name in command.options.indexes
+                option = command.options[option_name]
+                opt_line = "  --" + option.name.cbold("green")
+                if option.short_name != null then
+                    opt_line = opt_line + (" (-" + option.short_name + ")").color("dim")
+                end if
+                help_text = help_text + opt_line + char(10)
+                help_text = help_text + "    " + option.description.color("grey") + char(10)
+                if option.is_flag then
+                    help_text = help_text + "    " + "(flag)".color("dim") + char(10)
+                else if option.default != null then
+                    help_text = help_text + "    " + ("default: " + option.default).color("gold") + char(10)
+                end if
+            end for
+        end if
     end if
     return help_text
 end function
@@ -840,6 +896,7 @@ StateManager.load_plugins = function()
                 end for
             end if
 
+            if cmd.hasIndex("category") then builder.set_category(cmd.category)
             builder.set_function(cmd["function"]).build()
         end for
     end for
@@ -965,7 +1022,7 @@ StateCommands = {} // CLI commands for interacting with StateManager
 StateCommands.classID = "StateCommands"
 
 StateCommands.list_objects = function(args)
-    result = ""
+    result = char(10) + ("Stored objects").cbold("cyan") + char(10)
     for obj in StateManager.cob["stored_objects"]
         key = obj["uid"]
         line = key.color("cyan") + ":"
@@ -998,7 +1055,7 @@ StateCommands.focus_object = function(args)
     obj = StateManager.cob["stored_objects"].first("uid", uid)
     if obj != null then
         StateManager.cob["focused_object"] = obj
-        return
+        return ("Focused ").color("green") + uid.cbold("cyan") + (" @ ").color("dim") + obj.info.local_ip.color("gold")
     end if
 
     return Error.init("Unknown object: " + uid)
@@ -1025,15 +1082,18 @@ StateCommands.release_object = function(args)
 end function
 
 MiniClick.create_command("list", "List stored objects").
+    set_category("state").
     set_function(StateCommands["list_objects"]).
     build()
 
 MiniClick.create_command("focus", "Focus on a stored object").
+    set_category("state").
     add_argument("uid", "The UID of the object to focus on").
     set_function(StateCommands["focus_object"]).
     build()
 
 MiniClick.create_command("release", "Release a stored object").
+    set_category("state").
     add_argument("uid", "The UID of the object to release").
     set_function(StateCommands["release_object"]).
     build()
@@ -1097,30 +1157,36 @@ UtilityCommands.crack_md5 = function(args)
 end function
 
 MiniClick.create_command("echo", "Print a message").
+    set_category("utility").
     add_argument("message", "The message to print", true).
     set_function(UtilityCommands["echo"]).
     build()
 
 MiniClick.create_command("clear", "Clear the screen").
+    set_category("utility").
     set_function(UtilityCommands["clear"]).
     build()
 
 MiniClick.create_command("help", "Show help text").
+    set_category("utility").
     set_function(UtilityCommands["help"]).
     build()
 
 MiniClick.create_command("alias", "Create a command alias").
+    set_category("utility").
     add_argument("alias", "The alias to create").
     add_argument("command", "The command to alias").
     set_function(UtilityCommands["set_alias"]).
     build()
 
 MiniClick.create_command("unalias", "Remove a command alias").
+    set_category("utility").
     add_argument("alias", "The alias to remove").
     set_function(UtilityCommands["unset_alias"]).
     build()
 
 MiniClick.create_command("crack", "Crack an MD5 hash").
+    set_category("utility").
     add_argument("hash", "The hash to crack").
     set_function(UtilityCommands["crack_md5"]).
     build()
@@ -1268,6 +1334,489 @@ ExploitManager.check_libpath = function(libname, libversion)
     ver_dir = lib_dir + "/" + libversion
     if not c.File(ver_dir) then c.create_folder(lib_dir, libversion)
     return ver_dir
+end function
+
+ExploitManager.get_metax = function()
+    metax = StateManager.cob["remote_metax"]
+    if metax == null then metax = StateManager.cob["home_metax"]
+    if metax == null then return Error.init("metaxploit.so not loaded.")
+    return metax
+end function
+
+ExploitManager.get_active_lib = function()
+    if not StateManager.cob.hasIndex("active_lib") or StateManager.cob["active_lib"] == null then
+        return Error.init("No library loaded. Use connect or loadlib first.")
+    end if
+    return StateManager.cob["active_lib"]
+end function
+
+ExploitManager.store_active_lib = function(lib, ip = null, port = null)
+    StateManager.cob["active_lib"] = lib
+    StateManager.cob["active_ip"] = ip
+    StateManager.cob["active_port"] = port
+    StateManager.cob["active_addresses"] = []
+end function
+
+ExploitManager.format_session_banner = function(lib)
+    out = char(10) + ("Session active").cbold("green") + char(10)
+    if StateManager.cob["active_ip"] != null then
+        out = out + ("  Target:  ").color("dim") + StateManager.cob["active_ip"].cbold("gold") + ":" + str(StateManager.cob["active_port"]).color("cyan") + char(10)
+    end if
+    out = out + ("  Library: ").color("dim") + lib.lib_name.cbold("white") + char(10)
+    out = out + ("  Version: ").color("dim") + lib.version.color("gold") + char(10)
+    out = out + ("  Next:    ").color("dim") + "scan".cbold("white") + (" to pick shell/computer/file").color("dim")
+    return out
+end function
+
+ExploitManager.connect = function(ip, port)
+    port = port.to_int
+    if typeof(port) != "number" then return Error.init("Invalid port: " + port)
+    if not is_valid_ip(ip) then return Error.init("Invalid IP address: " + ip)
+
+    metax = ExploitManager.get_metax()
+    if typeof(metax) == "Error" then return metax
+
+    session = metax.net_use(ip, port)
+    if session == null then return Error.init("net_use failed for " + ip + ":" + port)
+
+    lib = session.dump_lib
+    if lib == null then return Error.init("dump_lib returned null for " + ip + ":" + port)
+
+    StateManager.cob["active_session"] = session
+    ExploitManager.store_active_lib(lib, ip, port)
+    return lib
+end function
+
+ExploitManager.load_local = function(path)
+    metax = ExploitManager.get_metax()
+    if typeof(metax) == "Error" then return metax
+
+    lib = metax.load(path)
+    if lib == null then return Error.init("Failed to load library: " + path)
+
+    ExploitManager.store_active_lib(lib, null, null)
+    return lib
+end function
+
+ExploitManager.parse_payloads = function(scan_raw)
+    payloads = []
+    segments = scan_raw.split("Unsafe check: ")[1:]
+
+    for segment in segments
+        entry = {}
+        entry.has_requirement = segment.indexOf("*") != null
+        label_start = segment.indexOf("<b>")
+        label_end = segment.indexOf("</b>")
+        if label_start == null or label_end == null then continue
+        entry.name = segment[label_start + 3:label_end]
+        payloads.push(entry)
+    end for
+
+    return payloads
+end function
+
+ExploitManager.format_access_label = function(access)
+    if access == "shell" then return "shell".cbold("green")
+    if access == "computer" then return "computer".cbold("magenta")
+    if access == "file" then return "file".color("gold")
+    if access == "number" then return "number".color("cyan")
+    if access == "unknown" then return "unknown".color("dim")
+    if access == "failed" then return "failed".color("red")
+    return access.color("white")
+end function
+
+ExploitManager.access_sort_key = function(access)
+    if access == "shell" then return 0
+    if access == "computer" then return 1
+    if access == "file" then return 2
+    if access == "number" then return 3
+    return 4
+end function
+
+ExploitManager.catalog_entry = function(index, address, payload, access, privilege, has_requirement, stored_result = null)
+    entry = {}
+    entry.index = index
+    entry.address = address
+    entry.payload = payload
+    entry.access = access
+    entry.privilege = privilege
+    entry.has_requirement = has_requirement
+    entry.stored_result = stored_result
+    entry.display_index = null
+    return entry
+end function
+
+ExploitManager.test_payload = function(lib, address, payload, opt = "")
+    result = lib.overflow(address, payload, opt)
+    t = typeof(result)
+    info = {}
+    info.result = result
+    info.usable = false
+    info.access = "failed"
+    info.privilege = "unknown"
+
+    if t == "shell" or t == "ftpShell" or t == "computer" or t == "file" or t == "number" then
+        tuple = ExploitManager.infer_tuple(result)
+        ExploitManager.save_exploit(lib.lib_name, lib.version, address, payload, tuple)
+        info.access = tuple[1]
+        info.privilege = tuple[0]
+        info.usable = true
+    end if
+
+    return info
+end function
+
+ExploitManager.build_catalog = function(try_all = false, discover = true, address_filter = null, show_progress = false)
+    lib = ExploitManager.get_active_lib()
+    if typeof(lib) == "Error" then return lib
+
+    metax = ExploitManager.get_metax()
+    if typeof(metax) == "Error" then return metax
+
+    libname = lib.lib_name
+    libver = lib.version
+    catalog = []
+    seen = {}
+    idx = 1
+
+    saved = ExploitManager.get_exploits(libname, libver)
+    for addr in saved.indexes
+        if address_filter != null and addr != address_filter then continue
+        addr_map = saved[addr]
+        for payload in addr_map.indexes
+            tuple = addr_map[payload]
+            key = addr + "|" + payload
+            seen[key] = true
+            catalog.push(ExploitManager.catalog_entry(idx, addr, payload, tuple[1], tuple[0], false, null))
+            idx = idx + 1
+        end for
+    end for
+
+    addresses = metax.scan(lib)
+    if addresses == null then addresses = []
+    StateManager.cob["active_addresses"] = addresses
+
+    for addr in addresses
+        if address_filter != null and addr != address_filter then continue
+        raw = metax.scan_address(lib, addr)
+        if typeof(raw) != "string" then continue
+
+        payloads = ExploitManager.parse_payloads(raw)
+        for payload_entry in payloads
+            key = addr + "|" + payload_entry.name
+            if seen[key] then continue
+            seen[key] = true
+            catalog.push(ExploitManager.catalog_entry(idx, addr, payload_entry.name, "unknown", "unknown", payload_entry.has_requirement, null))
+            idx = idx + 1
+        end for
+    end for
+
+    if discover then
+        if show_progress then
+            print(WifiManager.tag("*", "cyan") + " Discovering exploits on " + lib.lib_name.cbold("white") + "...")
+        end if
+
+        for entry in catalog
+            if entry.access != "unknown" then continue
+            if entry.has_requirement and not try_all then continue
+
+            if show_progress then
+                print(WifiManager.tag("*", "cyan") + " Testing " + entry.payload.color("white") + "...")
+            end if
+
+            test = ExploitManager.test_payload(lib, entry.address, entry.payload)
+            if test.usable then
+                entry.access = test.access
+                entry.privilege = test.privilege
+                t = typeof(test.result)
+                if t == "shell" or t == "ftpShell" or t == "computer" or t == "file" then
+                    entry.stored_result = test.result
+                end if
+                if show_progress then
+                    print(WifiManager.tag("+", "green") + " " + entry.payload.cbold("white") + (" -> ").color("dim") + ExploitManager.format_access_label(test.access))
+                end if
+            else
+                entry.access = "failed"
+                if show_progress then
+                    print(WifiManager.tag("-", "red") + " " + entry.payload.color("dim") + (" failed").color("red"))
+                end if
+            end if
+        end for
+    end if
+
+    StateManager.cob["exploit_catalog"] = catalog
+    return catalog
+end function
+
+ExploitManager.format_catalog_menu = function(catalog, try_all = false, access_filter = null)
+    selectable = []
+    for entry in catalog
+        if entry.access == "failed" then continue
+        if entry.access == "unknown" and entry.has_requirement and not try_all then continue
+        if access_filter != null and entry.access != access_filter then continue
+        selectable.push(entry)
+    end for
+
+    if selectable.len == 0 then
+        hint = "No exploits match"
+        if access_filter != null then hint = hint + " filter '" + access_filter + "'"
+        return Error.init(hint + ". Try scan --all or filter a")
+    end if
+
+    n = selectable.len
+    i = 0
+    while i < n - 1
+        j = 0
+        while j < n - i - 1
+            ka = ExploitManager.access_sort_key(selectable[j].access)
+            kb = ExploitManager.access_sort_key(selectable[j + 1].access)
+            if ka > kb then
+                tmp = selectable[j]
+                selectable[j] = selectable[j + 1]
+                selectable[j + 1] = tmp
+            end if
+            j = j + 1
+        end while
+        i = i + 1
+    end while
+
+    lib = StateManager.cob["active_lib"]
+    out = char(10) + ("Select exploit").cbold("cyan")
+    if lib != null then
+        out = out + ("  " + lib.lib_name.color("gold") + " v" + lib.version.color("dim"))
+    end if
+    out = out + char(10)
+
+    display_idx = 1
+    for entry in selectable
+        entry.display_index = display_idx
+        access_label = ExploitManager.format_access_label(entry.access)
+        status = (" ok").color("green")
+        if entry.has_requirement then status = (" *").color("orange")
+        if entry.access == "unknown" then status = (" ?").color("dim")
+
+        priv = ""
+        if entry.privilege != "unknown" and entry.privilege != null then
+            priv = (" as ").color("dim") + entry.privilege.color("cyan")
+        end if
+
+        line = "  [" + str(display_idx).cbold("gold") + "] " + access_label + priv
+        line = line + ("  ").color("dim") + entry.payload.cbold("white") + status + char(10)
+        out = out + line
+        display_idx = display_idx + 1
+    end for
+
+    StateManager.cob["selectable_catalog"] = selectable
+    if access_filter != null then
+        out = out + char(10) + ("Filter: ").color("dim") + access_filter.cbold("orange") + ("  (").color("dim") + "a".color("cyan") + (" = show all)").color("dim")
+    end if
+    out = out + char(10) + ExploitManager.format_session_help()
+    return out
+end function
+
+ExploitManager.format_session_help = function()
+    return ("Commands: ").color("dim") + "[#]".cbold("gold") + (" run  ").color("dim") + "r".color("cyan") + (" refresh  ").color("dim") + "f shell|computer|file".color("cyan") + (" filter  ").color("dim") + "a".color("cyan") + (" all  ").color("dim") + "q".color("red") + (" quit").color("dim")
+end function
+
+ExploitManager.prompt_opt_if_needed = function(entry)
+    if not entry.has_requirement then return ""
+    print(("This payload may need an argument (LAN IP, password, path).").color("orange"))
+    opt = user_input("Argument (blank to skip): ")
+    if opt == null then return ""
+    return opt.trim
+end function
+
+ExploitManager.run_selection = function(display_index, opt = null)
+    if not StateManager.cob.hasIndex("selectable_catalog") then return Error.init("No catalog loaded. Run scan first.")
+    selectable = StateManager.cob["selectable_catalog"]
+
+    chosen = null
+    for entry in selectable
+        if entry.display_index == display_index then chosen = entry
+    end for
+    if chosen == null then return Error.init("Invalid selection: " + display_index)
+
+    if opt == null and chosen.has_requirement then
+        opt = ExploitManager.prompt_opt_if_needed(chosen)
+    end if
+    if opt == null then opt = ""
+
+    if chosen.stored_result != null then
+        return ExploitManager.capture_result(chosen.address, chosen.payload, chosen.stored_result)
+    end if
+
+    lib = ExploitManager.get_active_lib()
+    if typeof(lib) == "Error" then return lib
+
+    test = ExploitManager.test_payload(lib, chosen.address, chosen.payload, opt)
+    if not test.usable then
+        out = char(10) + ("Exploit failed.").cbold("red") + char(10)
+        out = out + ExploitManager.format_result_type(test.result)
+        return out
+    end if
+
+    t = typeof(test.result)
+    if t == "shell" or t == "ftpShell" or t == "computer" or t == "file" then
+        return ExploitManager.capture_result(chosen.address, chosen.payload, test.result)
+    end if
+
+    return char(10) + ("Result: ").color("dim") + ExploitManager.format_result_type(test.result)
+end function
+
+ExploitManager.interactive_session = function(catalog, try_all, address_filter, default_opt = null, pick = null)
+    if pick != null then
+        menu = ExploitManager.format_catalog_menu(catalog, try_all, null)
+        if typeof(menu) == "Error" then return menu
+        pick = pick.to_int
+        if typeof(pick) != "number" then return Error.init("Invalid selection: " + pick)
+        return ExploitManager.run_selection(pick, default_opt)
+    end if
+
+    access_filter = null
+    last_result = null
+
+    while true
+        menu = ExploitManager.format_catalog_menu(catalog, try_all, access_filter)
+        if typeof(menu) == "Error" then return menu
+
+        print(menu)
+        choice = user_input("exploit> ")
+        if choice == null then return ("Session ended.").color("dim")
+        choice = choice.trim
+        if choice == "" then continue
+
+        parts = choice.split(" ")
+        cmd = parts[0].lower
+
+        if cmd == "q" or cmd == "quit" or cmd == "exit" then
+            if last_result != null then return last_result
+            return ("Session ended.").color("dim")
+        end if
+
+        if cmd == "r" or cmd == "refresh" then
+            print(WifiManager.tag("*", "cyan") + " Refreshing exploit list...")
+            catalog = ExploitManager.build_catalog(try_all, true, address_filter, true)
+            if typeof(catalog) == "Error" then return catalog
+            continue
+        end if
+
+        if cmd == "a" or cmd == "all" then
+            access_filter = null
+            continue
+        end if
+
+        if cmd == "f" or cmd == "filter" then
+            if parts.len < 2 or parts[1].lower == "clear" then
+                access_filter = null
+                continue
+            end if
+            access_filter = parts[1].lower
+            continue
+        end if
+
+        if cmd == "h" or cmd == "help" then
+            print(ExploitManager.format_session_help())
+            continue
+        end if
+
+        pick = cmd.to_int
+        if typeof(pick) == "number" then
+            result = ExploitManager.run_selection(pick, default_opt)
+            print(result)
+            last_result = result
+
+            if typeof(result) == "string" and result.indexOf("Exploit succeeded") != null then
+                cont = user_input(("Capture another exploit? (y/n): ").color("dim"))
+                if cont == null or cont.trim.lower != "y" then return result
+            end if
+            continue
+        end if
+
+        print(("Unknown command: ").color("red") + choice.color("white") + ("  Type h for help.").color("dim"))
+    end while
+end function
+
+ExploitManager.infer_tuple = function(result)
+    t = typeof(result)
+    if t == "shell" or t == "ftpShell" then return ["unknown", "shell"]
+    if t == "computer" then return ["unknown", "computer"]
+    if t == "file" then return ["unknown", "file"]
+    if t == "number" then return ["unknown", "number"]
+    return null
+end function
+
+ExploitManager.format_result_type = function(result)
+    t = typeof(result)
+    if t == "shell" or t == "ftpShell" then return "shell".cbold("green")
+    if t == "computer" then return "computer".cbold("magenta")
+    if t == "file" then return "file".color("gold")
+    if t == "number" then return ("number: " + str(result)).color("cyan")
+    if t == "string" then return result.color("red")
+    if t == "null" then return "null (exploit failed)".color("dim")
+    return str(result).color("white")
+end function
+
+ExploitManager.capture_result = function(address, payload, result)
+    t = typeof(result)
+    if t != "shell" and t != "ftpShell" and t != "computer" and t != "file" then return null
+
+    lib = StateManager.cob["active_lib"]
+    tuple = ExploitManager.infer_tuple(result)
+    if tuple != null then
+        ExploitManager.save_exploit(lib.lib_name, lib.version, address, payload, tuple)
+    end if
+
+    StateManager.set_object(result)
+    uid = StateManager.cob["focused_object"]["uid"]
+
+    out = char(10) + ("Exploit succeeded!").cbold("green") + char(10)
+    out = out + ("  Type:    ").color("dim") + ExploitManager.format_result_type(result) + char(10)
+    out = out + ("  Address: ").color("dim") + address.color("gold") + char(10)
+    out = out + ("  Payload: ").color("dim") + payload.color("white") + char(10)
+    out = out + ("  UID:     ").color("dim") + uid.cbold("cyan") + ("  (focused)").color("green")
+    return out
+end function
+
+ExploitManager.auto_exploit = function(try_all = false)
+    lib = ExploitManager.get_active_lib()
+    if typeof(lib) == "Error" then return lib
+
+    metax = ExploitManager.get_metax()
+    if typeof(metax) == "Error" then return metax
+
+    libname = lib.lib_name
+    libver = lib.version
+    saved = ExploitManager.get_exploits(libname, libver)
+
+    for addr in saved.indexes
+        addr_map = saved[addr]
+        for payload in addr_map.indexes
+            result = lib.overflow(addr, payload)
+            captured = ExploitManager.capture_result(addr, payload, result)
+            if captured != null then return captured
+        end for
+    end for
+
+    addresses = metax.scan(lib)
+    if addresses == null or addresses.len == 0 then return Error.init("Scan returned no addresses.")
+    StateManager.cob["active_addresses"] = addresses
+
+    for addr in addresses
+        raw = metax.scan_address(lib, addr)
+        if typeof(raw) != "string" then continue
+
+        payloads = ExploitManager.parse_payloads(raw)
+        for entry in payloads
+            if entry.has_requirement and not try_all then continue
+            result = lib.overflow(addr, entry.name)
+            captured = ExploitManager.capture_result(addr, entry.name, result)
+            if captured != null then return captured
+        end for
+    end for
+
+    hint = "Try ".color("dim") + "scan --all".cbold("white") + (" to list and pick exploits with requirements.").color("dim")
+    if not try_all then hint = hint + char(10) + ("Or run ").color("dim") + "auto --all".cbold("orange") + (" to brute-force every payload.").color("dim")
+    return char(10) + ("Auto exploit failed.").cbold("red") + char(10) + hint
 end function
 
 NetworkMapper = {}
@@ -1560,6 +2109,15 @@ FileManager.resolve_path = function(path)
     return current_path + "/" + path
 end function
 
+FileManager.FILE_EXPLORER_CANDIDATES = ["FileExplorer.exe", "/bin/FileExplorer", "/bin/FileExplorer.exe"]
+
+FileManager.find_file_explorer = function(computer)
+    for candidate in FileManager.FILE_EXPLORER_CANDIDATES
+        if computer.File(candidate) != null then return candidate
+    end for
+    return null
+end function
+
 FileManager.get_file = function(path)
     c = StateManager.get_focused_computer()
     if typeof(c) == "Error" then return c
@@ -1594,7 +2152,8 @@ ExploitCommands.enum_cmd = function(args)
     ip = args["target"]
     raw = ExploitManager.full_enum(ip)
     if typeof(raw) == "Error" then return raw
-    return raw.replace("open:true", "[open]".cbold("green")).replace("open:false", "[closed]".color("grey"))
+    body = raw.replace("open:true", "[open]".cbold("green")).replace("open:false", "[closed]".color("grey"))
+    return char(10) + ("ENUM: ").cbold("cyan") + ip.cbold("gold") + char(10) + body
 end function
 
 ExploitCommands.map_cmd = function(args)
@@ -1621,8 +2180,105 @@ end function
 ExploitCommands.smtp_cmd = function(args)
     result = ExploitManager.smtp_enum(args["ip"], args["port"])
     if typeof(result) == "Error" then return result
-    if typeof(result) == "list" then return result.join(char(10))
-    return str(result)
+
+    out = char(10) + ("SMTP users: ").cbold("cyan") + args["ip"].color("gold") + ":" + str(args["port"]).color("cyan") + char(10)
+    if typeof(result) == "list" then
+        for user in result
+            out = out + "  " + user.cbold("white") + char(10)
+        end for
+        return out
+    end if
+    return out + "  " + str(result).color("white")
+end function
+
+ExploitCommands.connect_cmd = function(args)
+    c = StateManager.get_focused_computer()
+    if typeof(c) == "Error" then return c
+    if not c.is_network_active then
+        if not WifiManager.ensure_wifi() then return Error.init("No network connection.")
+    end if
+
+    lib = ExploitManager.connect(args["ip"], args["port"])
+    if typeof(lib) == "Error" then return lib
+    return ExploitManager.format_session_banner(lib)
+end function
+
+ExploitCommands.loadlib_cmd = function(args)
+    lib = ExploitManager.load_local(args["path"])
+    if typeof(lib) == "Error" then return lib
+    return ExploitManager.format_session_banner(lib)
+end function
+
+ExploitCommands.libinfo_cmd = function(args)
+    lib = ExploitManager.get_active_lib()
+    if typeof(lib) == "Error" then return lib
+    return ExploitManager.format_session_banner(lib)
+end function
+
+ExploitCommands.scan_cmd = function(args)
+    catalog = ExploitManager.build_catalog(args["all"], not args["no_discover"], null, true)
+    if typeof(catalog) == "Error" then return catalog
+    return ExploitManager.interactive_session(catalog, args["all"], null, args["opt"], args["pick"])
+end function
+
+ExploitCommands.probe_cmd = function(args)
+    address = args["address"]
+    if address == null then
+        if not StateManager.cob.hasIndex("active_addresses") or StateManager.cob["active_addresses"].len == 0 then
+            return Error.init("No address given. Usage: probe <address> (or run scan first).")
+        end if
+        address = StateManager.cob["active_addresses"][0]
+    end if
+
+    catalog = ExploitManager.build_catalog(args["all"], not args["no_discover"], address, true)
+    if typeof(catalog) == "Error" then return catalog
+    return ExploitManager.interactive_session(catalog, args["all"], address, args["opt"], args["pick"])
+end function
+
+ExploitCommands.overflow_cmd = function(args)
+    lib = ExploitManager.get_active_lib()
+    if typeof(lib) == "Error" then return lib
+
+    address = args["address"]
+    payload = args["payload"]
+    opt = args["opt"]
+    if opt == null then opt = ""
+
+    result = lib.overflow(address, payload, opt)
+    captured = ExploitManager.capture_result(address, payload, result)
+    if captured != null then return captured
+
+    out = char(10) + ("Overflow result").cbold("cyan") + char(10)
+    out = out + ("  ").color("dim") + ExploitManager.format_result_type(result)
+    return out
+end function
+
+ExploitCommands.auto_cmd = function(args)
+    return ExploitManager.auto_exploit(args["all"])
+end function
+
+ExploitCommands.exploits_cmd = function(args)
+    lib = ExploitManager.get_active_lib()
+    if typeof(lib) == "Error" then return lib
+
+    saved = ExploitManager.get_exploits(lib.lib_name, lib.version)
+    out = char(10) + ("Cached exploits: ").cbold("cyan") + lib.lib_name.color("gold") + (" v").color("dim") + lib.version.color("dim") + char(10)
+
+    if saved.len == 0 then
+        return out + "  " + "(none saved yet - run scan to discover)".color("dim")
+    end if
+
+    for addr in saved.indexes
+        addr_map = saved[addr]
+        for payload in addr_map.indexes
+            tuple = addr_map[payload]
+            out = out + "  " + ExploitManager.format_access_label(tuple[1])
+            if tuple[0] != "unknown" then out = out + (" as ").color("dim") + tuple[0].color("cyan")
+            out = out + ("  ").color("dim") + payload.cbold("white") + char(10)
+        end for
+    end for
+    out = out + char(10) + ("Run ").color("dim") + "scan".cbold("white") + (" to pick from this list.").color("dim")
+    return out
 end function
 
 FileCommands = {}
@@ -1703,54 +2359,157 @@ FileCommands.pwd = function(args)
     return current_path.color("gold")
 end function
 
+FileCommands.file_cmd = function(args)
+    shell = StateManager.get_focused_shell()
+    if typeof(shell) == "Error" then return shell
+
+    computer = shell.host_computer
+    explorer = FileManager.find_file_explorer(computer)
+    if explorer == null then return Error.init("FileExplorer not found on this machine.")
+
+    launch_path = explorer
+    launch_args = ""
+
+    if args["path"] != null then
+        launch_args = FileManager.resolve_path(args["path"])
+    end if
+
+    if launch_args != "" then
+        result = shell.launch(launch_path, launch_args)
+    else
+        result = shell.launch(launch_path)
+    end if
+
+    if typeof(result) == "string" then return Error.init(result)
+    if result == 0 then return Error.init("Failed to launch FileExplorer (cooldown or permission issue).")
+
+    out = ("Opened ").color("green") + explorer.cbold("white") + (" on ").color("green")
+    out = out + StateManager.cob["focused_object"].info.local_ip.cbold("gold")
+    if launch_args != "" then out = out + (" at ").color("dim") + launch_args.color("cyan")
+    return out
+end function
+
 MiniClick.create_command("whois", "Look up WHOIS info for an IP or domain").
+    set_category("recon").
     add_argument("target", "IP address or domain name").
     set_function(ExploitCommands["whois_cmd"]).
     build()
 
 MiniClick.create_command("enum", "Enumerate router, ports, and LAN devices").
+    set_category("recon").
     add_argument("target", "Target IP address").
     set_function(ExploitCommands["enum_cmd"]).
     build()
 
 MiniClick.create_command("map", "WHOIS + network map (whois + nmap) for an IP or domain").
+    set_category("recon").
     add_argument("target", "IP address or domain (optional, shows last scan)", false, true).
     set_function(ExploitCommands["map_cmd"]).
     build()
 
 MiniClick.create_command("smtp", "SMTP user enumeration").
+    set_category("recon").
     add_argument("ip", "Target IP address").
     add_argument("port", "SMTP port number").
     set_function(ExploitCommands["smtp_cmd"]).
     build()
 
+MiniClick.create_command("connect", "Connect to a remote port and load its library").
+    set_category("exploit").
+    add_argument("ip", "Target IP address").
+    add_argument("port", "Target port number").
+    set_function(ExploitCommands["connect_cmd"]).
+    build()
+
+MiniClick.create_command("loadlib", "Load a local library for testing").
+    set_category("exploit").
+    add_argument("path", "Library path e.g. /lib/init.so").
+    set_function(ExploitCommands["loadlib_cmd"]).
+    build()
+
+MiniClick.create_command("libinfo", "Show the active library session").
+    set_category("exploit").
+    set_function(ExploitCommands["libinfo_cmd"]).
+    build()
+
+MiniClick.create_command("scan", "Interactive exploit browser - pick shell/computer/file from a menu").
+    set_category("exploit").
+    add_option("all", "Include and test payloads marked with requirements", false, null, true).
+    add_option("no_discover", "Skip auto-testing unknown payloads", false, null, true).
+    add_option("pick", "Select exploit by number without prompting", null).
+    add_option("opt", "Optional overflow argument for selected exploit", "").
+    set_function(ExploitCommands["scan_cmd"]).
+    build()
+
+MiniClick.create_command("probe", "Pick exploits at a specific memory address").
+    set_category("exploit").
+    add_argument("address", "Memory address (optional after scan)", false, true).
+    add_option("all", "Include payloads marked with requirements", false, null, true).
+    add_option("no_discover", "Skip auto-testing unknown payloads", false, null, true).
+    add_option("pick", "Select exploit by number without prompting", null).
+    add_option("opt", "Optional overflow argument for selected exploit", "").
+    set_function(ExploitCommands["probe_cmd"]).
+    build()
+
+MiniClick.create_command("overflow", "Run overflow exploit on active library").
+    set_category("exploit").
+    add_argument("address", "Memory address").
+    add_argument("payload", "Vulnerability / function name").
+    add_option("opt", "Optional overflow argument (LAN IP, password, etc.)", "").
+    set_function(ExploitCommands["overflow_cmd"]).
+    build()
+
+MiniClick.create_command("auto", "Auto-exploit active library (zero-req payloads first)").
+    set_category("exploit").
+    add_option("all", "Also try payloads marked with requirements", false, null, true).
+    set_function(ExploitCommands["auto_cmd"]).
+    build()
+
+MiniClick.create_command("exploits", "List cached exploits for the active library").
+    set_category("exploit").
+    set_function(ExploitCommands["exploits_cmd"]).
+    build()
+
 MiniClick.create_command("put", "Upload a file to the focused shell").
+    set_category("files").
     add_argument("source", "Source file path").
     add_argument("destination", "Destination path").
     set_function(FileCommands["put"]).
     build()
 
 MiniClick.create_command("get", "Download a file from the focused shell").
+    set_category("files").
     add_argument("source", "Source file path on remote").
     add_argument("destination", "Local destination path").
     set_function(FileCommands["get"]).
     build()
 
 MiniClick.create_command("ls", "List directory contents").
+    set_category("files").
     add_argument("path", "Directory path", false, true).
     set_function(FileCommands["ls"]).
     build()
 
 MiniClick.create_command("cat", "Print file contents").
+    set_category("files").
     add_argument("path", "File path").
     set_function(FileCommands["cat"]).
     build()
 
 MiniClick.create_command("pwd", "Print current working directory").
+    set_category("files").
     set_function(FileCommands["pwd"]).
     build()
 
+MiniClick.create_command("file", "Open FileExplorer on the focused shell").
+    set_category("files").
+    add_argument("path", "Optional starting directory", false, true).
+    set_function(FileCommands["file_cmd"]).
+    build()
+
 MiniClick.aliases["nmap"] = "map"
+MiniClick.aliases["exploit"] = "overflow"
+MiniClick.aliases["explorer"] = "file"
 
 Magpie = {}
 
@@ -1774,6 +2533,7 @@ end function
 Magpie.run_repl = function()
     print("Magpie multitool loaded.".cbold("cyan"))
     print("Type ".color("dim") + "help".cbold("white") + " for commands, ".color("dim") + "exit".cbold("white") + " to quit.".color("dim"))
+    print(("Workflow: ").color("dim") + "map".color("cyan") + " -> ".color("dim") + "connect".color("orange") + " -> ".color("dim") + "scan".color("green") + (" (pick shell/computer/file)").color("dim"))
 
     while true
         input = user_input(Magpie.build_prompt())
